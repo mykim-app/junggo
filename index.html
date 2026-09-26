@@ -12,7 +12,7 @@
   /* ▼ Supabase 함수 주소로 바꿔 주세요 */
   :root{
     --bg:#EEF1F4; --paper:#FFFFFF; --ink:#1B2230; --muted:#667085; --line:#D5DAE1;
-    --tag:#F4C542; --tag-ink:#5A4300; --new:#2A5BD7; --dot:#8A94A6; --bj:#6B7A90; --dg:#E27A2E; --sold:#1E8E5A; --warn:#B42318;
+    --tag:#F4C542; --tag-ink:#5A4300; --new:#2A5BD7; --dot:#8A94A6; --bj:#6B7A90; --dg:#E27A2E; --sold:#1E8E5A; --jg:#7A5AF8; --warn:#B42318;
   }
   *{box-sizing:border-box}
   html,body{margin:0}
@@ -56,6 +56,7 @@
   .strip .d{position:absolute;width:7px;height:7px;margin-left:-3.5px;border-radius:50%;background:var(--dot);opacity:.8}
   .strip .d.dg,.key.dg{background:var(--dg)}
   .strip .d.sd{background:var(--sold)}
+  .strip .d.jg,.key.jg{background:var(--jg)}
   .strip .mk.sold{background:var(--sold)}
   .strip .lb.sold{color:var(--sold);font-weight:700}
   .strip .lb.top{top:-10px} .strip .lb.bottom{bottom:-12px} .strip .lb.top2{top:-28px}
@@ -104,7 +105,7 @@
 <body>
 <div class="wrap">
   <h1>중고 시세 조회</h1>
-  <p class="lead">제품명을 넣으면 번개장터와 당근마켓에 올라온 최근 30일 실제 거래 가격(거래완료 기준)과 지금 판매 중인 매물 가격, 다나와 새 제품 최저가를 함께 보여 줍니다.</p>
+  <p class="lead">제품명을 넣으면 최근 30일 실제 거래 가격(번개장터 거래완료 기준)과 번개장터·당근마켓·중고나라에서 지금 판매 중인 매물 가격, 다나와 새 제품 최저가를 함께 보여 줍니다.</p>
 
   <form id="f" autocomplete="off">
     <input id="q" type="search" placeholder="예: 아이패드 에어5, 닌텐도 스위치 OLED" required maxlength="60" aria-label="제품명">
@@ -184,7 +185,7 @@ async function retryDaangn(q, ex, key, data){
     data._daangnRetrying = false;
     if (j.daangn?.stats?.count) {
       data.daangn = j.daangn;
-      data.combined = { stats: summarizeJs([...(data.bunjang?.prices || []), ...j.daangn.prices]) };
+      data.combined = { stats: summarizeJs([...(data.bunjang?.prices || []), ...(data.joongna?.prices || []), ...j.daangn.prices]) };
       if (data.new?.stats?.median) data.ratio = Math.round(data.combined.stats.median / data.new.stats.median * 100);
       saveResult(key, data);
     }
@@ -220,7 +221,7 @@ async function search(force = false){
     const oldOk = dOld?.stats?.count && Date.now() - Date.parse(dOld.fetchedAt || saved.t) < DAANGN_KEEP_MS;
     if (empty && oldOk) {
       data.daangn = dOld;
-      const merged = [...(data.bunjang?.prices || []), ...dOld.prices];
+      const merged = [...(data.bunjang?.prices || []), ...(data.joongna?.prices || []), ...dOld.prices];
       data.combined = { stats: summarizeJs(merged) };
       if (data.new?.stats?.median) data.ratio = Math.round(data.combined.stats.median / data.new.stats.median * 100);
     }
@@ -250,6 +251,7 @@ function render(d, savedAt){
   const sources = [
     { key: "bunjang", name: "번개장터", cls: "bj", data: d.bunjang },
     { key: "daangn", name: "당근마켓", cls: "dg", data: d.daangn },
+    { key: "joongna", name: "중고나라", cls: "jg", data: d.joongna },
   ];
   const ok = (x) => x && x.stats && x.stats.count > 0;
   const c = d.combined?.stats, n = d.new, sold = d.sold;
@@ -340,7 +342,7 @@ function render(d, savedAt){
       <div class="ends">${parseFloat(pos(minV)) - parseFloat(pos(maxV)) < 34
         ? `<span style="left:${((parseFloat(pos(minV)) + parseFloat(pos(maxV))) / 2).toFixed(2)}%${tx((minV + maxV) / 2)}">${won(minV)} ~ ${won(maxV)}원</span>`
         : `<span style="left:${pos(maxV)}${tx(maxV)}">최고 ${won(maxV)}원</span><span style="left:${pos(minV)}${tx(minV)}">최저 ${won(minV)}원</span>`}</div>
-      <p class="note">왼쪽일수록 높은 가격입니다. 위쪽 초록 점은 최근 거래완료, 아래쪽 점은 지금 판매 중인 매물(회색 번개장터, 주황 당근)입니다. 노란 띠는 ${hasSold ? "거래 가격" : "매물 가격"}의 가운데 50% 구간입니다. ${new Date(d.checkedAt).toLocaleString("ko-KR")} 기준</p>
+      <p class="note">왼쪽일수록 높은 가격입니다. 위쪽 초록 점은 최근 거래완료, 아래쪽 점은 지금 판매 중인 매물(회색 번개장터, 주황 당근, 보라 중고나라)입니다. 노란 띠는 ${hasSold ? "거래 가격" : "매물 가격"}의 가운데 50% 구간입니다. ${new Date(d.checkedAt).toLocaleString("ko-KR")} 기준</p>
     </section>`;
 
   if (hasSold && sold.items.length) {

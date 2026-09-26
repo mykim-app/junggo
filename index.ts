@@ -1,6 +1,7 @@
 // 중고 시세 조회 함수 (Supabase Edge Function)
 // - 번개장터: 현재 올라온 중고 매물 가격을 모아 광고·구매글·극단값을 빼고 집계
 // - 번개장터 거래완료: 최근 30일(기본) 판매완료 글로 실거래 평균·중간값 집계
+// - 중고나라: 최근 등록된 판매 중 매물(최대 100건)을 같은 기준으로 집계
 // - 당근마켓: 지정한 동네(기본 인천 연수구 송도동) 주변 매물을 같은 기준으로 집계
 // - 다나와: 새 제품 최저가 참고 (네이버 쇼핑 검색 API는 2026-07-31 종료)
 // 호출: GET /functions/v1/price?q=아이패드 에어5&ex=키보드,펜슬
@@ -195,6 +196,58 @@ async function fetchBunjang(q: string, exclude: string[]) {
     searched: list.length,
     totalFound: Number(data?.num_found ?? 0),
   });
+}
+
+// ---------- 중고나라 ----------
+// 공식 API가 없어 웹 검색 화면에 담긴 자료(Next.js 전송 자료)를 읽음. 최신 등록순 2쪽(최대 100건)
+function extractJsonArray(text: string, start: number): any[] {
+  // start 위치의 '[' 부터 짝이 맞는 ']' 까지 잘라 JSON으로 읽음 (문자열 안의 괄호는 건너뜀)
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]" && --depth === 0) return JSON.parse(text.slice(start, i + 1));
+  }
+  return [];
+}
+
+async function fetchJoongnaPage(q: string, page: number): Promise<any[]> {
+  const url = `https://web.joongna.com/search/${encodeURIComponent(q)}?sort=RECENT_SORT&page=${page}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+      "Accept-Language": "ko-KR,ko;q=0.9",
+    },
+  });
+  if (!res.ok) throw new Error(`중고나라 응답 오류 (${res.status})`);
+  const html = await res.text();
+  const chunks = [...html.matchAll(/self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)/g)].map((m) => JSON.parse(`"${m[1]}"`));
+  const payload = chunks.join("");
+  const t = payload.indexOf('"totalSize"');
+  if (t < 0) return [];
+  const i = payload.indexOf('"items":[', t);
+  if (i < 0) return [];
+  return extractJsonArray(payload, i + 8);
+}
+
+async function fetchJoongna(q: string, exclude: string[]) {
+  const pages = await Promise.all([1, 2].map((p) => fetchJoongnaPage(q, p).catch(() => [] as any[])));
+  const seen = new Set<number>();
+  const rows = pages.flat().filter((x) => x && !seen.has(x.seq) && seen.add(x.seq));
+  const listings: Listing[] = rows
+    .filter((x) => x.objectType === "product" && [0, 1].includes(Number(x.state))) // 0 판매중, 1 예약중
+    .map((x) => ({
+      title: String(x.title ?? ""),
+      price: Number(x.price),
+      reserved: Number(x.state) === 1,
+      location: x.mainLocationName ?? "",
+      updated: Date.parse(String(x.sortDate ?? "").replace(" ", "T") + "+09:00") || 0, // 한국 시각
+      image: String(x.url ?? ""),
+      link: `https://web.joongna.com/product/${x.seq}`,
+    }));
+  return aggregate("중고나라", filterListings(listings, q, exclude), { searched: rows.length });
 }
 
 // ---------- 번개장터 거래완료 (최근 N일 실거래) ----------
@@ -449,17 +502,19 @@ Deno.serve(async (req) => {
   }
   const days = Math.min(Math.max(Number(u.searchParams.get("days") ?? 30) || 30, 7), 90);
 
-  const [bj, dg, nv, sd] = await Promise.allSettled([
+  const [bj, dg, nv, sd, jg] = await Promise.allSettled([
     fetchBunjang(q, exclude), fetchDaangn(q, exclude), fetchDanawa(q, exclude), fetchBunjangSold(q, exclude, days),
+    fetchJoongna(q, exclude),
   ]);
   const err = (r: PromiseRejectedResult) => ({ error: String(r.reason?.message ?? r.reason) });
   const bunjang = bj.status === "fulfilled" ? bj.value : err(bj);
   const daangn = dg.status === "fulfilled" ? dg.value : err(dg);
   const fresh = nv.status === "fulfilled" ? nv.value : err(nv);
   const sold: any = sd.status === "fulfilled" ? sd.value : err(sd);
+  const joongna: any = jg.status === "fulfilled" ? jg.value : err(jg);
 
   // 두 곳 매물을 합쳐 다시 극단값을 빼고 통합 시세 계산
-  const merged = [bunjang, daangn].flatMap((s: any) => s.candidatePrices ?? []);
+  const merged = [bunjang, daangn, joongna].flatMap((s: any) => s.candidatePrices ?? []);
   const { kept } = trimOutliers(merged);
   const combined = { stats: summarize(kept) };
 
@@ -471,7 +526,7 @@ Deno.serve(async (req) => {
   if (sold.stats?.count && "stats" in fresh && fresh.stats.median) {
     soldRatio = Math.round((sold.stats.mean / fresh.stats.median) * 100);
   }
-  for (const s of [bunjang, daangn, sold] as any[]) delete s.candidatePrices;
+  for (const s of [bunjang, daangn, joongna, sold] as any[]) delete s.candidatePrices;
 
-  return json({ query: q, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, sold, new: fresh, ratio, soldRatio });
+  return json({ query: q, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, joongna, sold, new: fresh, ratio, soldRatio });
 });
