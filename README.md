@@ -34,16 +34,16 @@ MBTI·통관 조회(unipass)에 쓰는 프로젝트를 그대로 쓰면 됩니�
 
 ```bash
 npx supabase login
-npx supabase link --project-ref <REF>
+npx supabase link --project-ref vewmmndhipvazzmttzzr
 npx supabase functions deploy price --no-verify-jwt
 ```
 
 ## 3. 함수 점검
 
-브라우저 주소창에 아래 주소를 넣습니다. `<REF>`는 대시보드 주소 `supabase.com/dashboard/project/` 뒤의 값입니다.
+브라우저 주소창에 아래 주소를 넣습니다. (이 프로젝트 주소가 미리 들어 있습니다.)
 
 ```
-https://<REF>.supabase.co/functions/v1/price?q=닌텐도 스위치 OLED&forceFunctionRegion=ap-northeast-2
+https://vewmmndhipvazzmttzzr.supabase.co/functions/v1/price?q=닌텐도 스위치 OLED&forceFunctionRegion=ap-northeast-2
 ```
 
 JSON 글자가 나오면 정상입니다. 확인할 곳은 다음과 같습니다.
@@ -69,8 +69,7 @@ JSON 글자가 나오면 정상입니다. 확인할 곳은 다음과 같습니�
 
 ## 5. GitHub Pages 게시
 
-1. `index.html`을 메모장으로 열어 `FUNCTION_URL` 값의 `YOUR-PROJECT`를 `<REF>`로 바꿈
-   - 예: `https://abcdefgh.supabase.co/functions/v1/price`
+1. `index.html`의 `FUNCTION_URL`은 이미 `https://vewmmndhipvazzmttzzr.supabase.co/functions/v1/price`로 들어 있음 (수정 불필요)
 2. GitHub에서 `mykim-app/junggo` 저장소를 Public으로 만들고 `index.html` 업로드 (다른 파일은 선택, 인증키는 어디에도 없음)
 3. 저장소 **Settings → Pages → Deploy from a branch → main / (root) → Save**
 4. 1~2분 뒤 `https://mykim-app.github.io/junggo/` 접속
@@ -100,3 +99,9 @@ JSON 글자가 나오면 정상입니다. 확인할 곳은 다음과 같습니�
 - 당근마켓은 해외 접속이나 짧은 시간에 반복 조회할 때 빈 결과를 돌려주는 경우가 있어, 화면에서 함수를 서울 지역(`forceFunctionRegion=ap-northeast-2`)에서 실행하도록 호출하고 빈 결과면 최대 3회 다시 시도합니다.
 - 단종 제품은 다나와 가격이 남은 재고 가격이라 실제보다 높게 나올 수 있습니다(예: 갤럭시 버즈2).
 - 조회 결과는 10분간 캐시됩니다.
+
+## 화면 표시 기준
+
+- 분포 띠는 왼쪽일수록 높은 가격입니다.
+- 매물 목록은 모두 최근 등록순입니다(번개장터는 등록·끌어올림 시각, 당근은 최초 등록 시각). 거래완료 목록은 최근 거래순입니다.
+- 거래완료 매물 목록은 참고용이라 접혀 있고, "최근 거래완료 매물 보기"를 누르면 펼쳐집니다.

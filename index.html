@@ -58,6 +58,14 @@
   .src{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:4px 18px;font-size:14px;color:var(--muted)}
   .src b{color:var(--ink);font-variant-numeric:tabular-nums}
   .key{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:1px}
+  .fold{margin-top:32px}
+  .fold summary{cursor:pointer;font-weight:700;font-size:16px;padding:12px 16px;background:var(--paper);border-radius:14px;list-style:none}
+  .fold summary::-webkit-details-marker{display:none}
+  .fold summary::before{content:"▸";display:inline-block;margin-right:8px;color:var(--muted);transition:transform .15s}
+  .fold[open] summary::before{transform:rotate(90deg)}
+  .fold[open] summary{border-radius:14px 14px 0 0;border-bottom:1px solid var(--bg)}
+  .fold[open] .list{border-radius:0 0 14px 14px}
+  .fold summary .sub{font-size:13px;font-weight:400;color:var(--muted);margin-left:6px}
   h2 .sub{font-size:13px;font-weight:400;color:var(--muted);margin-left:6px}
   .strip .mk{position:absolute;top:10px;bottom:10px;width:3px;margin-left:-1.5px;border-radius:2px}
   .strip .mk.med{background:var(--tag-ink)}
@@ -106,7 +114,7 @@
 </div>
 
 <script>
-const FUNCTION_URL = "https://vewmmndhipvazzmttzzr.supabase.co/functions/v1/price"; // ← 바꿀 곳
+const FUNCTION_URL = "https://vewmmndhipvazzmttzzr.supabase.co/functions/v1/price"; // Supabase 함수 주소
 
 const $ = (s) => document.querySelector(s);
 const won = (n) => Number(n).toLocaleString("ko-KR");
@@ -177,7 +185,8 @@ function render(d){
   const hi = Math.max(...all, hasNew ? n.stats.median : 0);
   const pad = (hi - lo) * 0.08 || hi * 0.05 || 1;
   const a = lo - pad, b = hi + pad;
-  const pos = (v) => ((v - a) / (b - a) * 100).toFixed(2) + "%";
+  // 왼쪽이 높은 가격, 오른쪽이 낮은 가격
+  const pos = (v) => ((b - v) / (b - a) * 100).toFixed(2) + "%";
   const tx = (v) => { const x = parseFloat(pos(v)); return x < 18 ? ";transform:translateX(-8px)" : x > 82 ? ";transform:translateX(calc(-100% + 8px))" : ""; };
   const near = (x, y) => Math.abs(parseFloat(pos(x)) - parseFloat(pos(y))) < 18;
   const minV = Math.min(...all), maxV = Math.max(...all);
@@ -219,20 +228,21 @@ function render(d){
 
   html += `
       <div class="strip" role="img" aria-label="가격 분포: 최저 ${won(minV)}원, 최고 ${won(maxV)}원">
-        <div class="band" style="left:${pos(band.p25)};width:calc(${pos(band.p75)} - ${pos(band.p25)})"></div>
+        <div class="band" style="left:${pos(band.p75)};width:calc(${pos(band.p25)} - ${pos(band.p75)})"></div>
         <div class="axis"></div>
         ${soldDots}${listDots}
         ${hasSold ? `<div class="mk sold" style="left:${pos(sold.stats.mean)}"></div><div class="lb sold top" style="left:${pos(sold.stats.mean)}${tx(sold.stats.mean)}">거래 평균 ${man(sold.stats.mean)}</div>` : ""}
         ${hasList ? `<div class="mk med" style="left:${pos(c.median)}"></div><div class="lb med bottom" style="left:${pos(c.median)}${tx(c.median)}">판매 중 ${man(c.median)}</div>` : ""}
         ${hasNew ? `<div class="mk new" style="left:${pos(n.stats.median)}"></div><div class="lb new ${hasSold && near(n.stats.median, sold.stats.mean) ? "bottom" : "top"}" style="left:${pos(n.stats.median)}${tx(n.stats.median)}">새 제품 ${man(n.stats.median)}</div>` : ""}
       </div>
-      <div class="ends"><span style="left:${pos(minV)}${tx(minV)}">최저 ${won(minV)}원</span><span style="left:${pos(maxV)}${tx(maxV)}">최고 ${won(maxV)}원</span></div>
-      <p class="note">위쪽 초록 점은 최근 거래완료, 아래쪽 점은 지금 판매 중인 매물(회색 번개장터, 주황 당근)입니다. 노란 띠는 ${hasSold ? "거래 가격" : "매물 가격"}의 가운데 50% 구간입니다. ${new Date(d.checkedAt).toLocaleString("ko-KR")} 기준</p>
+      <div class="ends"><span style="left:${pos(maxV)}${tx(maxV)}">최고 ${won(maxV)}원</span><span style="left:${pos(minV)}${tx(minV)}">최저 ${won(minV)}원</span></div>
+      <p class="note">왼쪽일수록 높은 가격입니다. 위쪽 초록 점은 최근 거래완료, 아래쪽 점은 지금 판매 중인 매물(회색 번개장터, 주황 당근)입니다. 노란 띠는 ${hasSold ? "거래 가격" : "매물 가격"}의 가운데 50% 구간입니다. ${new Date(d.checkedAt).toLocaleString("ko-KR")} 기준</p>
     </section>`;
 
   if (hasSold && sold.items.length) {
-    html += `<h2>최근 거래완료 <span class="sub">번개장터, 최근 ${sold.days}일</span></h2>` +
-      listHtml(sold.items.map((it) => ({ ...it, location: (it.updated ? ago(it.updated) + " 거래" : ""), updated: 0 })));
+    // 거래완료 매물은 참고용이라 접어 두고, 누르면 펼침
+    html += `<details class="fold"><summary>최근 거래완료 매물 보기 <span class="sub">번개장터 최근 ${sold.days}일 ${sold.stats.count}건 중 최근 ${sold.items.length}건</span></summary>` +
+      listHtml(sold.items.map((it) => ({ ...it, location: (it.updated ? ago(it.updated) + " 거래" : ""), updated: 0 }))) + `</details>`;
   }
   for (const s of sources) {
     if (ok(s.data) && s.data.items.length) {

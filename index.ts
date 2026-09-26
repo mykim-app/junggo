@@ -106,13 +106,13 @@ function aggregate(source: string, filtered: Listing[], extra: Record<string, un
     stats: summarize(kept),
     prices: kept,
     candidatePrices: candidates.map((x) => x.price),
-    items: inRange.slice(0, 12),
+    items: [...inRange].sort((a, b) => b.updated - a.updated).slice(0, 12), // 최근 등록순
   };
 }
 
 // ---------- 번개장터 ----------
 async function fetchBunjang(q: string, exclude: string[]) {
-  const url = `https://api.bunjang.co.kr/api/1/find_v2.json?q=${encodeURIComponent(q)}&order=score&page=0&n=100`;
+  const url = `https://api.bunjang.co.kr/api/1/find_v2.json?q=${encodeURIComponent(q)}&order=date&page=0&n=100`;
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
   });
@@ -174,8 +174,6 @@ async function fetchBunjangSold(q: string, exclude: string[], days: number) {
     from: new Date(cutoff).toISOString(),
     to: new Date().toISOString(),
   });
-  // 거래 목록은 최근 거래순으로
-  result.items = [...result.items].sort((a, b) => b.updated - a.updated).slice(0, 10);
   return result;
 }
 
@@ -220,7 +218,7 @@ async function fetchDaangn(q: string, exclude: string[]) {
       price: Math.round(parseFloat(String(x.price ?? "0"))),
       reserved: String(x.status) === "Reserved",
       location: x.region?.name ?? "",
-      updated: Date.parse(x.boostedAt ?? x.createdAt ?? "") || 0,
+      updated: Date.parse(x.createdAt ?? x.boostedAt ?? "") || 0, // 최초 등록 시각
       image: String(x.thumbnail ?? ""),
       link: `https://www.daangn.com${x.href ?? ""}`,
     }));
