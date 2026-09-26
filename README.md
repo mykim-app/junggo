@@ -1,51 +1,91 @@
 # 중고 시세 조회
 
-제품명을 입력하면 번개장터의 현재 중고 매물 가격(중간값·가격대·분포)과 네이버 쇼핑 새 제품 가격을 함께 보여 주는 사이트입니다.
+제품명을 입력하면 번개장터·당근마켓의 현재 중고 매물 가격(통합 중간값·가격대·분포)과 다나와 새 제품 최저가를 함께 보여 주는 사이트입니다.
 
 - 화면: GitHub Pages (`index.html`)
-- 자료 조회: Supabase Edge Function (`supabase/functions/price/index.ts`)
+- 자료 조회: Supabase Edge Function `price` (`supabase/functions/price/index.ts`)
 - 저장소 예시: `mykim-app/junggo` → 게시 주소 `https://mykim-app.github.io/junggo/`
+- **발급받을 인증키 없음** (네이버 쇼핑 검색 API는 2026-07-31 종료되어 다나와로 대체)
 
-## 1. 네이버 검색 API 키 발급
+## 1. 기존 Supabase 프로젝트 사용 가능 여부
 
-1. 네이버 개발자센터(developers.naver.com) → Application → 애플리케이션 등록
-2. 사용 API: **검색** 선택
-3. 환경: **WEB 설정** → 웹 서비스 URL에 `https://mykim-app.github.io` 입력
-4. 발급된 **Client ID**, **Client Secret** 보관 (하루 25,000회까지 무료)
+MBTI·통관 조회(unipass)에 쓰는 프로젝트를 그대로 쓰면 됩니다. 새 프로젝트를 만들 필요가 없습니다.
 
-## 2. Supabase 함수 배포
+| 확인 항목 | 기준 (무료 요금제) | 이번 사이트 추가 후 |
+|---|---|---|
+| 프로젝트당 함수 개수 | 최대 100개 | unipass + price = 2개 |
+| 함수 호출 횟수 | 조직 전체 월 50만 회 | 조회 1번 = 1회 |
+| Secrets(비밀값) | 프로젝트 공통 | 기존 `ALLOWED_ORIGIN`을 그대로 같이 씀 |
 
-기존 프로젝트(통관 조회 사이트와 같은 프로젝트)를 그대로 써도 됩니다.
+- `ALLOWED_ORIGIN`은 프로젝트 전체 함수가 같이 쓰는 값이라, unipass 때 `https://mykim-app.github.io`로 넣어 두었다면 추가 작업이 없습니다. 넣지 않았어도 코드 기본값이 같은 주소입니다.
+- 무료 프로젝트는 오랫동안 사용이 없으면 일시 중지될 수 있습니다. 대시보드 첫 화면에 "Paused" 표시가 있으면 Restore를 누르면 됩니다.
+
+## 2. Supabase 함수 만들기 (대시보드 방식)
+
+1. supabase.com → 로그인 → 기존 프로젝트 선택
+2. 왼쪽 메뉴 **Edge Functions** → **Deploy a new function** → **Via Editor**
+3. 함수 이름을 `price`로 입력 (화면 주소와 맞춰야 하므로 정확히 `price`)
+4. 편집기 내용을 모두 지우고 `supabase/functions/price/index.ts` 내용을 전부 붙여 넣기 → **Deploy function**
+5. 배포 후 함수 목록에서 `price` → **Details**(또는 Settings) → JWT 검증 항목(화면에 따라 "Verify JWT" 또는 "Enforce JWT verification") **끄기** → 저장
+   - 켜 두면 웹페이지에서 부를 때 401 오류가 납니다.
+6. (선택) 당근 기준 동네를 송도동이 아닌 곳으로 바꾸려면 **Edge Functions → Secrets**에서 `DAANGN_REGION` 추가 (아래 4번 참고)
+
+명령창 방식을 쓰려면 아래와 같습니다.
 
 ```bash
-# 저장소 폴더에서
-supabase secrets set NAVER_CLIENT_ID=발급받은ID NAVER_CLIENT_SECRET=발급받은Secret
-supabase secrets set ALLOWED_ORIGIN=https://mykim-app.github.io
-
-supabase functions deploy price --no-verify-jwt
+npx supabase login
+npx supabase link --project-ref <REF>
+npx supabase functions deploy price --no-verify-jwt
 ```
 
-배포 후 브라우저에서 아래 주소가 JSON으로 나오면 정상입니다.
+## 3. 함수 점검
+
+브라우저 주소창에 아래 주소를 넣습니다. `<REF>`는 대시보드 주소 `supabase.com/dashboard/project/` 뒤의 값입니다.
 
 ```
-https://프로젝트ID.supabase.co/functions/v1/price?q=아이패드 에어5
+https://<REF>.supabase.co/functions/v1/price?q=닌텐도 스위치 OLED&forceFunctionRegion=ap-northeast-2
 ```
 
-## 3. 화면 연결 및 게시
+JSON 글자가 나오면 정상입니다. 확인할 곳은 다음과 같습니다.
 
-1. `index.html`에서 `FUNCTION_URL` 한 줄을 위 함수 주소(`.../functions/v1/price`)로 수정
-2. GitHub 저장소에 올린 뒤 Settings → Pages → Branch `main` / `/(root)` 저장
-3. `https://mykim-app.github.io/junggo/?q=제품명` 형태로 바로 조회 링크도 쓸 수 있음
+- `"combined"` 안의 `"median"`: 통합 중고 시세
+- `"bunjang"`, `"daangn"`: 출처별 결과. 조회가 막히면 `"error"` 문구가 나옴
+- `"new"` 안의 `"rep"`: 다나와 대표 제품과 최저가
+
+오류별 조치:
+
+- **401 오류:** JWT 검증이 켜져 있음 → 2-5 단계 확인
+- **404 오류:** 함수 이름이 `price`가 아님
+- **daangn의 `searched`가 0:** 당근이 빈 결과를 준 경우. 잠시 뒤 다시 조회. 계속 0이면 알려 주세요.
+
+## 4. 당근 기준 동네 바꾸기 (선택)
+
+기본값은 `송도동-6543`(인천 연수구 송도동)입니다. 결과는 기준 동네를 중심으로 인천·경기 인근까지 넓게 나옵니다.
+
+1. 당근마켓 웹(daangn.com) → 중고거래 → 동네 선택
+2. 주소창에서 `in=역삼동-6035` 같은 부분 확인
+3. Supabase **Edge Functions → Secrets** → `DAANGN_REGION` 이름으로 `역삼동-6035` 형식의 값 저장
+
+## 5. GitHub Pages 게시
+
+1. `index.html`을 메모장으로 열어 `FUNCTION_URL` 값의 `YOUR-PROJECT`를 `<REF>`로 바꿈
+   - 예: `https://abcdefgh.supabase.co/functions/v1/price`
+2. GitHub에서 `mykim-app/junggo` 저장소를 Public으로 만들고 `index.html` 업로드 (다른 파일은 선택, 인증키는 어디에도 없음)
+3. 저장소 **Settings → Pages → Deploy from a branch → main / (root) → Save**
+4. 1~2분 뒤 `https://mykim-app.github.io/junggo/` 접속
+5. `https://mykim-app.github.io/junggo/?q=제품명` 형태로 바로 조회 링크도 쓸 수 있음
 
 ## 계산 방식
 
-- 번개장터 검색 결과 최대 100건 중 광고, 판매완료, 구매 희망·매입·부품·고장 글, 검색어가 제목에 모두 들어 있지 않은 글, 형식적인 가격(1,111,111원 등)을 제외
-- 남은 가격에서 사분위 범위(IQR) 기준으로 지나치게 높거나 낮은 가격을 추가로 제외한 뒤 중간값·가격대(하위 25%~상위 25%)·평균 계산
-- 네이버는 새 상품만(중고·단종·판매예정 제외) 보고, 케이스·필름 같은 액세서리가 섞이지 않도록 중간값의 40% 미만 가격은 제외
-- "새 제품 대비 %"는 중고 중간값 ÷ 새 제품 중간값
+- 번개장터(최대 100건)·당근마켓(동네 주변 검색 결과) 매물 중 광고, 판매완료, 구매 희망·매입·부품·고장 글, 검색어가 제목에 모두 들어 있지 않은 글, 형식적인 가격(1,111,111원 등)을 제외
+- 케이스·필름·키보드 등 액세서리 단어가 있는 글은 제외(단, `+`, `&`, `포함`, `세트`가 있는 묶음 판매 글은 유지). 검색어 자체에 그 단어가 있으면 적용하지 않음
+- 그래도 남은 저가 글을 거르기 위해 상위 25% 가격의 30% 미만은 제외
+- 출처별로, 그리고 두 곳을 합쳐서 사분위 범위(IQR) 기준 극단값을 뺀 뒤 중간값·가격대(하위 25%~상위 25%)·평균 계산
+- 새 제품가: 다나와 검색 1순위 상품의 최저가(중고·해외구매·리퍼 상품 제외). "새 제품 대비 %"는 통합 중고 중간값 ÷ 이 가격
 
 ## 유의사항
 
-- 번개장터는 공식 공개 API가 아니므로, 번개장터 측에서 응답 형식을 바꾸거나 접근을 막으면 중고 시세가 나오지 않을 수 있습니다. 이 경우에도 네이버 새 제품 가격은 계속 표시됩니다. 개인 참고용으로만 쓰는 것을 전제로 합니다.
-- 결과가 엉뚱하면 검색어를 구체적으로(용량·모델명 포함) 쓰거나 "제외할 단어"에 `프로, 케이스, 펜슬` 등을 넣으면 정확해집니다.
+- 번개장터·당근마켓·다나와 모두 공식 공개 API가 아니므로, 화면 형식이 바뀌거나 접근이 막히면 해당 출처만 "조회 실패"로 표시되고 나머지는 계속 나옵니다. 개인 참고용으로만 쓰는 것을 전제로 합니다.
+- 당근마켓은 해외 접속이나 짧은 시간에 반복 조회할 때 빈 결과를 돌려주는 경우가 있어, 화면에서 함수를 서울 지역(`forceFunctionRegion=ap-northeast-2`)에서 실행하도록 호출하고 빈 결과면 최대 3회 다시 시도합니다.
+- 단종 제품은 다나와 가격이 남은 재고 가격이라 실제보다 높게 나올 수 있습니다(예: 갤럭시 버즈2).
 - 조회 결과는 10분간 캐시됩니다.

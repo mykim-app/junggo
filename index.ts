@@ -1,27 +1,35 @@
 // 중고 시세 조회 함수 (Supabase Edge Function)
 // - 번개장터: 현재 올라온 중고 매물 가격을 모아 광고·구매글·극단값을 빼고 집계
-// - 네이버 쇼핑 검색 API: 새 제품 가격(최저가·중간값) 참고
+// - 당근마켓: 지정한 동네(기본 인천 연수구 송도동) 주변 매물을 같은 기준으로 집계
+// - 다나와: 새 제품 최저가 참고 (네이버 쇼핑 검색 API는 2026-07-31 종료)
 // 호출: GET /functions/v1/price?q=아이패드 에어5&ex=키보드,펜슬
 
-const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") ?? "*";
-const NAVER_ID = Deno.env.get("NAVER_CLIENT_ID") ?? "";
-const NAVER_SECRET = Deno.env.get("NAVER_CLIENT_SECRET") ?? "";
+// 호출 허용 주소 (도메인까지만, 여러 개는 쉼표로 구분). 기존 unipass 함수와 같은 Secret을 함께 씀
+const ALLOWED = (Deno.env.get("ALLOWED_ORIGIN") ?? "https://mykim-app.github.io")
+  .split(",").map((s) => s.trim().replace(/\/$/, "")).filter(Boolean);
+// 당근 검색 기준 동네: "동이름-지역번호" (기본 송도동)
+const DAANGN_REGION = Deno.env.get("DAANGN_REGION") ?? "송도동-6543";
 
-const cors = {
-  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+const corsFor = (origin: string | null) => ({
+  "Access-Control-Allow-Origin": origin && ALLOWED.includes(origin) ? origin : ALLOWED[0],
+  "Vary": "Origin",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-region",
+});
 
 // 판매 글이 아닌 것(구매·매입·부품 등)을 거르는 단어
 const NOT_FOR_SALE = [
-  "삽니다", "삽니당", "구해요", "구합니다", "구매합니다", "구매해요", "매입", "사요",
+  "삽니다", "삽니당", "구매)", "[구매]", "구해요", "구합니다", "구매합니다", "구매해요", "매입", "사요",
   "부품", "고장", "파손", "잠김", "교환", "대여", "렌탈", "분실", "케이스만", "박스만", "액정만", "한쪽", "왼쪽", "오른쪽",
 ];
 
+// 본품이 아닌 액세서리 글에 흔한 단어 (검색어에 들어 있으면 적용하지 않음)
+const ACCESSORY = ["케이스", "필름", "강화유리", "커버", "폴리오", "파우치", "상자", "키보드", "거치대", "스킨", "펜슬팁", "스트랩", "충전기", "케이블"];
+// 본품과 함께 파는 묶음 표시 (이 표시가 있으면 액세서리 단어가 있어도 유지)
+const BUNDLE = ["+", "&", "포함", "세트"];
+
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
 const tokens = (q: string) => q.toLowerCase().split(/\s+/).filter(Boolean);
-const stripTags = (s: string) => s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&quot;/g, '"');
 
 function quantile(sorted: number[], p: number): number {
   if (!sorted.length) return 0;
@@ -59,6 +67,48 @@ function summarize(sorted: number[]) {
   };
 }
 
+type Listing = {
+  title: string; price: number; reserved: boolean;
+  location: string; updated: number; image: string; link: string;
+};
+
+// 판매 글 기준 공통 거르기: 가격 범위·형식 가격·검색어 포함·제외어
+function filterListings(list: Listing[], q: string, exclude: string[]): Listing[] {
+  const qTokens = tokens(q);
+  const banned = [...NOT_FOR_SALE, ...exclude].map(norm).filter(Boolean);
+  return list.filter((x) => {
+    if (!Number.isFinite(x.price) || x.price < 1000 || x.price > 50_000_000 || isDummyPrice(x.price)) return false;
+    const name = norm(x.title);
+    if (!qTokens.every((t) => name.includes(t))) return false; // 검색어가 모두 제목에 있어야 함
+    if (banned.some((b) => name.includes(b))) return false;
+    const acc = ACCESSORY.filter((w) => !qTokens.some((t) => t.includes(w) || w.includes(t)));
+    if (acc.some((w) => name.includes(w)) && !BUNDLE.some((m) => name.includes(m))) return false;
+    return true;
+  });
+}
+
+// 남은 액세서리·소모품 글은 본품보다 훨씬 싸므로, 상위 25% 가격의 30% 미만은 제외
+function dropCheap(list: Listing[]): Listing[] {
+  if (list.length < 8) return list;
+  const p75 = quantile(list.map((x) => x.price).sort((a, b) => a - b), 0.75);
+  return list.filter((x) => x.price >= p75 * 0.3);
+}
+
+function aggregate(source: string, filtered: Listing[], extra: Record<string, unknown> = {}) {
+  const candidates = dropCheap(filtered);
+  const { kept, low, high } = trimOutliers(candidates.map((x) => x.price));
+  const inRange = candidates.filter((x) => x.price >= low && x.price <= high);
+  return {
+    source,
+    ...extra,
+    excludedOutliers: candidates.length - kept.length,
+    stats: summarize(kept),
+    prices: kept,
+    candidatePrices: candidates.map((x) => x.price),
+    items: inRange.slice(0, 12),
+  };
+}
+
 // ---------- 번개장터 ----------
 async function fetchBunjang(q: string, exclude: string[]) {
   const url = `https://api.bunjang.co.kr/api/1/find_v2.json?q=${encodeURIComponent(q)}&order=score&page=0&n=100`;
@@ -69,86 +119,140 @@ async function fetchBunjang(q: string, exclude: string[]) {
   const data = await res.json();
   const list: any[] = Array.isArray(data?.list) ? data.list : [];
 
-  const qTokens = tokens(q);
-  const banned = [...NOT_FOR_SALE, ...exclude].map(norm).filter(Boolean);
-
-  const candidates = list.filter((x) => {
-    if (x?.type !== "PRODUCT" || x.ad) return false;
-    if (!["0", "1"].includes(String(x.status))) return false; // 0 판매중, 1 예약중
-    if (String(x.used) === "2") return false; // 구매 희망 글
-    const price = Number(x.price);
-    if (!Number.isFinite(price) || price < 1000 || price > 50_000_000 || isDummyPrice(price)) return false;
-    const name = norm(String(x.name ?? ""));
-    if (!qTokens.every((t) => name.includes(t))) return false; // 검색어가 모두 제목에 있어야 함
-    if (banned.some((b) => name.includes(b))) return false;
-    return true;
-  });
-
-  const { kept, low, high } = trimOutliers(candidates.map((x) => Number(x.price)));
-  const inRange = candidates.filter((x) => Number(x.price) >= low && Number(x.price) <= high);
-
-  return {
-    source: "번개장터",
-    searched: list.length,
-    totalFound: Number(data?.num_found ?? 0),
-    excludedOutliers: candidates.length - kept.length,
-    stats: summarize(kept),
-    prices: kept,
-    items: inRange.slice(0, 12).map((x) => ({
-      title: String(x.name),
+  const listings: Listing[] = list
+    .filter((x) => x?.type === "PRODUCT" && !x.ad)
+    .filter((x) => ["0", "1"].includes(String(x.status))) // 0 판매중, 1 예약중
+    .filter((x) => String(x.used) !== "2") // 구매 희망 글
+    .map((x) => ({
+      title: String(x.name ?? ""),
       price: Number(x.price),
       reserved: String(x.status) === "1",
       location: x.location ?? "",
       updated: Number(x.update_time ?? 0) * 1000,
       image: String(x.product_image ?? "").replace("{cnt}", "1").replace("{res}", "300"),
       link: `https://m.bunjang.co.kr/products/${x.pid}`,
-    })),
+    }));
+
+  return aggregate("번개장터", filterListings(listings, q, exclude), {
+    searched: list.length,
+    totalFound: Number(data?.num_found ?? 0),
+  });
+}
+
+// ---------- 당근마켓 ----------
+// 공식 API가 없어 웹 검색 화면에 담긴 자료(__remixContext)를 읽음
+async function fetchDaangnOnce(q: string) {
+  const url = `https://www.daangn.com/kr/buy-sell/?in=${encodeURIComponent(DAANGN_REGION)}&search=${encodeURIComponent(q)}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+      "Accept-Language": "ko-KR,ko;q=0.9",
+    },
+    redirect: "follow",
+  });
+  if (!res.ok) throw new Error(`당근 응답 오류 (${res.status})`);
+  const html = await res.text();
+  const marker = "__remixContext = ";
+  const i = html.indexOf(marker);
+  if (i < 0) throw new Error("당근 화면 형식이 바뀌었습니다");
+  const j = html.indexOf(";</script>", i);
+  const ctx = JSON.parse(html.slice(i + marker.length, j));
+  const loader = ctx?.state?.loaderData ?? {};
+  const route: any = Object.entries(loader).find(([k]) => k.includes("buy-sell"))?.[1] ?? {};
+  return {
+    region: route?.searchRegion?.fullName ?? DAANGN_REGION,
+    articles: Array.isArray(route?.buySellArticles) ? route.buySellArticles : [],
   };
 }
 
-// ---------- 네이버 쇼핑 ----------
-async function fetchNaver(q: string, exclude: string[]) {
-  if (!NAVER_ID || !NAVER_SECRET) throw new Error("네이버 API 키가 설정되지 않았습니다");
-  const url = `https://openapi.naver.com/v1/search/shop.json?query=${encodeURIComponent(q)}&display=50&sort=sim`;
-  const res = await fetch(url, {
-    headers: { "X-Naver-Client-Id": NAVER_ID, "X-Naver-Client-Secret": NAVER_SECRET },
-  });
-  if (!res.ok) throw new Error(`네이버 응답 오류 (${res.status})`);
-  const data = await res.json();
-  const list: any[] = Array.isArray(data?.items) ? data.items : [];
-
-  const qTokens = tokens(q);
-  const banned = ["중고", "리퍼", ...exclude].map(norm).filter(Boolean);
-
-  // productType 1~3: 일반 새 상품 (4~6 중고, 7~9 단종, 10~12 판매예정)
-  let items = list
+async function fetchDaangn(q: string, exclude: string[]) {
+  // 당근은 간헐적으로 빈 결과를 주는 경우가 있어 최대 3회 시도
+  let got = { region: DAANGN_REGION, articles: [] as any[] };
+  for (let t = 0; t < 3; t++) {
+    got = await fetchDaangnOnce(q);
+    if (got.articles.length) break;
+    await new Promise((r) => setTimeout(r, 600));
+  }
+  const listings: Listing[] = got.articles
+    .filter((x) => ["Ongoing", "Reserved"].includes(String(x.status)))
     .map((x) => ({
-      title: stripTags(String(x.title ?? "")),
-      price: Number(x.lprice),
-      mall: String(x.mallName ?? ""),
-      type: Number(x.productType),
-      image: String(x.image ?? ""),
-      link: String(x.link ?? ""),
-    }))
-    .filter((x) => x.type >= 1 && x.type <= 3 && x.price > 0)
-    .filter((x) => qTokens.every((t) => norm(x.title).includes(t)))
-    .filter((x) => !banned.some((b) => norm(x.title).includes(b)));
+      title: String(x.title ?? ""),
+      price: Math.round(parseFloat(String(x.price ?? "0"))),
+      reserved: String(x.status) === "Reserved",
+      location: x.region?.name ?? "",
+      updated: Date.parse(x.boostedAt ?? x.createdAt ?? "") || 0,
+      image: String(x.thumbnail ?? ""),
+      link: `https://www.daangn.com${x.href ?? ""}`,
+    }));
 
-  // 케이스·필름 같은 액세서리는 대개 본품보다 훨씬 싸므로 중간값의 40% 미만은 제외
-  const roughMedian = quantile(items.map((x) => x.price).sort((a, b) => a - b), 0.5);
-  items = items.filter((x) => x.price >= roughMedian * 0.4);
+  return aggregate("당근마켓", filterListings(listings, q, exclude), {
+    searched: got.articles.length,
+    region: got.region,
+  });
+}
 
-  const { kept } = trimOutliers(items.map((x) => x.price));
+// ---------- 다나와 (새 제품 최저가) ----------
+// 네이버 쇼핑 검색 API가 2026-07-31 종료되어 다나와 검색 화면에서 최저가를 읽음 (인증키 불필요)
+const decode = (s: string) =>
+  s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+   .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+
+async function fetchDanawa(q: string, exclude: string[]) {
+  const url = `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(q)}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+      "Accept-Language": "ko-KR,ko;q=0.9",
+      Referer: "https://www.danawa.com/",
+    },
+  });
+  if (!res.ok) throw new Error(`다나와 응답 오류 (${res.status})`);
+  const html = await res.text();
+
+  // 상품명 영역(prod_name)을 기준으로 나눠 이름·링크·첫 가격·이미지를 읽음
+  const parts = html.split('class="prod_name"');
+  const raw: { title: string; price: number; link: string; image: string; mall: string }[] = [];
+  for (let k = 1; k < parts.length; k++) {
+    const seg = parts[k];
+    const prev = parts[k - 1].slice(-6000);
+    const liClass = [...prev.matchAll(/<li[^>]*class="([^"]*)"/g)].pop()?.[1] ?? "";
+    if (/ad/i.test(liClass.replace("prod_item", ""))) continue; // 광고 상품 제외
+    const m = seg.match(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+    const p = seg.match(/class="price_sect">[\s\S]*?<strong>([\d,]+)<\/strong>/);
+    if (!m || !p) continue;
+    const imgs = [...prev.matchAll(/<img[^>]+(?:data-original|src)="([^"]+)"/g)];
+    let image = imgs.pop()?.[1] ?? "";
+    if (image.startsWith("//")) image = "https:" + image;
+    raw.push({
+      title: decode(m[2]),
+      price: Number(p[1].replace(/,/g, "")),
+      link: m[1].replace(/&amp;/g, "&"),
+      image,
+      mall: "다나와 최저가",
+    });
+  }
+
+  // 중고·해외구매·리퍼 제외, 제외어 반영 (다나와는 영문 상품명이 많아 검색어 포함 검사는 하지 않음)
+  const banned = ["중고", "해외구매", "리퍼", "렌탈", ...exclude].map(norm).filter(Boolean);
+  const candidates = raw.filter((x) => x.price > 0 && !banned.some((b) => norm(x.title).includes(b)));
+  if (!candidates.length) {
+    return { source: "다나와", searched: raw.length, stats: summarize([]), rep: null, items: [] };
+  }
+
+  // 다나와 검색 1순위 상품을 대표 제품으로 보고, 가격대가 비슷한(0.5~2배) 상품만 함께 표시
+  const rep = candidates[0];
+  const similar = candidates.filter((x) => x.price >= rep.price * 0.5 && x.price <= rep.price * 2).slice(0, 5);
   return {
-    source: "네이버 쇼핑",
-    searched: list.length,
-    stats: summarize(kept),
-    items: [...items].sort((a, b) => a.price - b.price).slice(0, 5)
-      .map(({ type: _t, ...rest }) => rest),
+    source: "다나와",
+    searched: raw.length,
+    rep,
+    stats: { ...summarize(similar.map((x) => x.price).sort((a, b) => a - b)), median: rep.price, min: rep.price },
+    items: similar,
   };
 }
 
 Deno.serve(async (req) => {
+  const cors = corsFor(req.headers.get("Origin"));
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
   const u = new URL(req.url);
@@ -163,14 +267,24 @@ Deno.serve(async (req) => {
 
   if (!q) return json({ error: "검색어(q)를 입력하세요" }, 400);
 
-  const [bj, nv] = await Promise.allSettled([fetchBunjang(q, exclude), fetchNaver(q, exclude)]);
-  const used = bj.status === "fulfilled" ? bj.value : { error: String(bj.reason?.message ?? bj.reason) };
-  const fresh = nv.status === "fulfilled" ? nv.value : { error: String(nv.reason?.message ?? nv.reason) };
+  const [bj, dg, nv] = await Promise.allSettled([
+    fetchBunjang(q, exclude), fetchDaangn(q, exclude), fetchDanawa(q, exclude),
+  ]);
+  const err = (r: PromiseRejectedResult) => ({ error: String(r.reason?.message ?? r.reason) });
+  const bunjang = bj.status === "fulfilled" ? bj.value : err(bj);
+  const daangn = dg.status === "fulfilled" ? dg.value : err(dg);
+  const fresh = nv.status === "fulfilled" ? nv.value : err(nv);
+
+  // 두 곳 매물을 합쳐 다시 극단값을 빼고 통합 시세 계산
+  const merged = [bunjang, daangn].flatMap((s: any) => s.candidatePrices ?? []);
+  const { kept } = trimOutliers(merged);
+  const combined = { stats: summarize(kept) };
 
   let ratio: number | null = null;
-  if ("stats" in used && "stats" in fresh && used.stats.count && fresh.stats.count && fresh.stats.median) {
-    ratio = Math.round((used.stats.median / fresh.stats.median) * 100);
+  if (combined.stats.count && "stats" in fresh && fresh.stats.count && fresh.stats.median) {
+    ratio = Math.round((combined.stats.median / fresh.stats.median) * 100);
   }
+  for (const s of [bunjang, daangn] as any[]) delete s.candidatePrices;
 
-  return json({ query: q, exclude, checkedAt: new Date().toISOString(), used, new: fresh, ratio });
+  return json({ query: q, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, new: fresh, ratio });
 });

@@ -12,7 +12,7 @@
   /* ▼ Supabase 함수 주소로 바꿔 주세요 */
   :root{
     --bg:#EEF1F4; --paper:#FFFFFF; --ink:#1B2230; --muted:#667085; --line:#D5DAE1;
-    --tag:#F4C542; --tag-ink:#5A4300; --new:#2A5BD7; --dot:#8A94A6; --warn:#B42318;
+    --tag:#F4C542; --tag-ink:#5A4300; --new:#2A5BD7; --dot:#8A94A6; --bj:#6B7A90; --dg:#E27A2E; --warn:#B42318;
   }
   *{box-sizing:border-box}
   html,body{margin:0}
@@ -45,7 +45,13 @@
   .strip{position:relative;height:74px;margin:28px 0 6px}
   .strip .band{position:absolute;top:22px;height:30px;background:#FBEFC8;border-radius:6px}
   .strip .axis{position:absolute;left:0;right:0;top:37px;height:1px;background:var(--line)}
-  .strip .d{position:absolute;width:7px;height:7px;margin-left:-3.5px;border-radius:50%;background:var(--dot);opacity:.75}
+  .strip .d{position:absolute;width:7px;height:7px;margin-left:-3.5px;border-radius:50%;background:var(--dot);opacity:.8}
+  .strip .d.dg,.key.dg{background:var(--dg)}
+  .strip .d.bj,.key.bj{background:var(--bj)}
+  .src{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:4px 18px;font-size:14px;color:var(--muted)}
+  .src b{color:var(--ink);font-variant-numeric:tabular-nums}
+  .key{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:1px}
+  h2 .sub{font-size:13px;font-weight:400;color:var(--muted);margin-left:6px}
   .strip .mk{position:absolute;top:10px;bottom:10px;width:3px;margin-left:-1.5px;border-radius:2px}
   .strip .mk.med{background:var(--tag-ink)}
   .strip .mk.new{background:var(--new)}
@@ -75,7 +81,7 @@
 <body>
 <div class="wrap">
   <h1>중고 시세 조회</h1>
-  <p class="lead">제품명을 넣으면 번개장터에 올라온 중고 매물 가격과 네이버 쇼핑 새 제품 가격을 함께 보여 줍니다.</p>
+  <p class="lead">제품명을 넣으면 번개장터와 당근마켓에 올라온 중고 매물 가격과 다나와 새 제품 최저가를 함께 보여 줍니다.</p>
 
   <form id="f" autocomplete="off">
     <input id="q" type="search" placeholder="예: 아이패드 에어5, 닌텐도 스위치 OLED" required maxlength="60" aria-label="제품명">
@@ -87,8 +93,8 @@
   <div id="out"></div>
 
   <footer>
-    가격은 조회 시점에 올라와 있는 판매 글 기준의 대략적인 값입니다. 광고·구매 희망 글·부품용 글과 지나치게 높거나 낮은 가격은 빼고 계산합니다.
-    실제 거래 가격은 상태·구성품·보증 여부에 따라 달라집니다.
+    가격은 조회 시점에 올라와 있는 판매 글 기준의 대략적인 값입니다. 광고, 구매 희망 글, 부품용 글, 케이스·필름 같은 액세서리 글과 지나치게 높거나 낮은 가격은 빼고 계산합니다. 당근마켓은 동네 기준 서비스라 설정한 동네 주변 매물만 반영됩니다.
+    새 제품가는 다나와 검색 1순위 상품의 최저가이며, 단종 제품은 남은 재고 가격이라 실제보다 높게 나올 수 있습니다. 실제 거래 가격은 상태·구성품·보증 여부에 따라 달라집니다.
   </footer>
 </div>
 
@@ -117,7 +123,8 @@ async function search(){
   $("#out").innerHTML = `<p class="msg">가격을 모으는 중입니다…</p>`;
   try {
     if (FUNCTION_URL.includes("YOUR-PROJECT")) throw new Error("index.html의 FUNCTION_URL을 Supabase 함수 주소로 바꿔 주세요.");
-    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}`);
+    // 당근·번개장터가 국내 접속을 기준으로 응답하므로 서울 지역에서 실행
+    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&forceFunctionRegion=ap-northeast-2`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `조회 실패 (${res.status})`);
     saveRecent(q); drawRecent();
@@ -129,61 +136,78 @@ async function search(){
   }
 }
 
+function listHtml(items){
+  return `<ul class="list">` + items.map((it) => `
+    <li><a href="${esc(it.link)}" target="_blank" rel="noopener">
+      <img src="${esc(it.image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+      <div><div class="t">${it.reserved ? '<span class="badge">예약중</span>' : ""}${esc(it.title)}</div>
+        <div class="m">${esc(it.location || it.mall || "지역 미표시")}${it.updated ? " · " + ago(it.updated) : ""}</div></div>
+      <div class="p">${won(it.price)}원</div></a></li>`).join("") + `</ul>`;
+}
+
 function render(d){
-  const u = d.used, n = d.new;
-  const hasUsed = u && u.stats && u.stats.count > 0;
-  const hasNew = n && n.stats && n.stats.count > 0;
+  const sources = [
+    { key: "bunjang", name: "번개장터", cls: "bj", data: d.bunjang },
+    { key: "daangn", name: "당근마켓", cls: "dg", data: d.daangn },
+  ];
+  const ok = (x) => x && x.stats && x.stats.count > 0;
+  const c = d.combined?.stats, n = d.new;
+  const hasUsed = c && c.count > 0;
+  const hasNew = ok(n);
   let html = "";
 
   if (!hasUsed) {
-    html += `<p class="msg">${u?.error ? "번개장터 조회 실패: " + esc(u.error) : "조건에 맞는 중고 매물이 없습니다. 검색어를 줄이거나 띄어쓰기를 바꿔 보세요."}</p>`;
+    const errs = sources.filter((s) => s.data?.error).map((s) => `${s.name} 조회 실패: ${esc(s.data.error)}`);
+    html += `<p class="msg">${errs.length ? errs.join("<br>") + "<br>" : ""}조건에 맞는 중고 매물이 없습니다. 검색어를 줄이거나 띄어쓰기를 바꿔 보세요.</p>`;
   } else {
-    const s = u.stats;
-    const lo = Math.min(s.min, hasNew ? n.stats.median : Infinity);
-    const hi = Math.max(s.max, hasNew ? n.stats.median : 0);
+    const all = sources.flatMap((s) => ok(s.data) ? s.data.prices : []);
+    const lo = Math.min(...all, hasNew ? n.stats.median : Infinity);
+    const hi = Math.max(...all, hasNew ? n.stats.median : 0);
     const pad = (hi - lo) * 0.08 || hi * 0.05 || 1;
     const a = lo - pad, b = hi + pad;
     const pos = (v) => ((v - a) / (b - a) * 100).toFixed(2) + "%";
     // 가장자리 라벨이 잘리지 않도록 정렬 방향 조정
     const tx = (v) => { const x = parseFloat(pos(v)); return x < 18 ? ";transform:translateX(-8px)" : x > 82 ? ";transform:translateX(calc(-100% + 8px))" : ""; };
+    const minV = Math.min(...all), maxV = Math.max(...all);
 
-    // 점이 겹치지 않도록 줄을 나눠 배치
-    const dots = u.prices.map((p, i) => `<span class="d" style="left:${pos(p)};top:${24 + (i % 4) * 7}px"></span>`).join("");
+    let k = 0;
+    const dots = sources.map((s) => ok(s.data)
+      ? s.data.prices.map((p) => `<span class="d ${s.cls}" style="left:${pos(p)};top:${24 + (k++ % 4) * 7}px"></span>`).join("") : "").join("");
+
+    const perSource = sources.map((s) => {
+      if (s.data?.error) return `<li><span class="key ${s.cls}"></span>${s.name}: 조회 실패 (${esc(s.data.error)})</li>`;
+      if (!ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 조건에 맞는 매물 없음</li>`;
+      const st = s.data.stats;
+      return `<li><span class="key ${s.cls}"></span>${s.name} <b>${won(st.median)}원</b> (${st.count}건${s.data.region ? ", " + esc(s.data.region) + " 주변" : ""})</li>`;
+    }).join("");
 
     html += `<section class="tag" aria-label="중고 시세">
-      <p class="q">“${esc(d.query)}” 중고 시세 (중간값)</p>
-      <div class="price">${won(s.median)}<small>원</small></div>
-      <p class="range">대부분 ${won(s.p25)} ~ ${won(s.p75)}원 · 평균 ${won(s.mean)}원 · 매물 ${s.count}건</p>
-      ${hasNew ? `<p class="compare">새 제품 가격(중간값) <b>${won(n.stats.median)}원</b>, 최저 <b>${won(n.stats.min)}원</b> — 중고 시세는 새 제품의 약 <b>${d.ratio}%</b> 수준입니다.</p>`
+      <p class="q">“${esc(d.query)}” 중고 시세 (번개장터와 당근 매물의 중간값)</p>
+      <div class="price">${won(c.median)}<small>원</small></div>
+      <p class="range">대부분 ${won(c.p25)} ~ ${won(c.p75)}원, 평균 ${won(c.mean)}원, 매물 ${c.count}건</p>
+      <ul class="src">${perSource}</ul>
+      ${hasNew ? `<p class="compare">새 제품 다나와 최저가 <b>${won(n.stats.median)}원</b> (${esc(n.rep?.title ?? "")}). 중고 시세는 새 제품의 약 <b>${d.ratio}%</b> 수준입니다.</p>`
                : `<p class="compare">새 제품 가격을 가져오지 못했습니다${n?.error ? " (" + esc(n.error) + ")" : ""}.</p>`}
-      <div class="strip" role="img" aria-label="매물 가격 분포: 최저 ${won(s.min)}원, 최고 ${won(s.max)}원, 중간값 ${won(s.median)}원">
-        <div class="band" style="left:${pos(s.p25)};width:calc(${pos(s.p75)} - ${pos(s.p25)})"></div>
+      <div class="strip" role="img" aria-label="매물 가격 분포: 최저 ${won(minV)}원, 최고 ${won(maxV)}원, 중간값 ${won(c.median)}원">
+        <div class="band" style="left:${pos(c.p25)};width:calc(${pos(c.p75)} - ${pos(c.p25)})"></div>
         <div class="axis"></div>
         ${dots}
-        <div class="mk med" style="left:${pos(s.median)}"></div>
-        <div class="lb med" style="left:${pos(s.median)}${tx(s.median)}">중고 ${man(s.median)}</div>
-        ${hasNew ? `<div class="mk new" style="left:${pos(n.stats.median)}"></div><div class="lb new ${Math.abs(parseFloat(pos(n.stats.median)) - parseFloat(pos(s.median))) < 18 ? "bottom" : "top"}" style="left:${pos(n.stats.median)}${tx(n.stats.median)}">새 제품 ${man(n.stats.median)}</div>` : ""}
+        <div class="mk med" style="left:${pos(c.median)}"></div>
+        <div class="lb med" style="left:${pos(c.median)}${tx(c.median)}">중고 ${man(c.median)}</div>
+        ${hasNew ? `<div class="mk new" style="left:${pos(n.stats.median)}"></div><div class="lb new ${Math.abs(parseFloat(pos(n.stats.median)) - parseFloat(pos(c.median))) < 18 ? "bottom" : "top"}" style="left:${pos(n.stats.median)}${tx(n.stats.median)}">새 제품 ${man(n.stats.median)}</div>` : ""}
       </div>
-      <div class="ends"><span style="left:${pos(s.min)}${tx(s.min)}">최저 ${won(s.min)}원</span><span style="left:${pos(s.max)}${tx(s.max)}">최고 ${won(s.max)}원</span></div>
-      <p class="note">점 하나가 매물 하나, 노란 띠는 가운데 50% 가격대입니다. 극단값 ${u.excludedOutliers}건 제외 · ${new Date(d.checkedAt).toLocaleString("ko-KR")} 기준</p>
+      <div class="ends"><span style="left:${pos(minV)}${tx(minV)}">최저 ${won(minV)}원</span><span style="left:${pos(maxV)}${tx(maxV)}">최고 ${won(maxV)}원</span></div>
+      <p class="note">점 하나가 매물 하나(회색 번개장터, 주황 당근), 노란 띠는 가운데 50% 가격대입니다. ${new Date(d.checkedAt).toLocaleString("ko-KR")} 기준</p>
     </section>`;
 
-    html += `<h2>번개장터 매물</h2><ul class="list">` + u.items.map((it) => `
-      <li><a href="${esc(it.link)}" target="_blank" rel="noopener">
-        <img src="${esc(it.image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
-        <div><div class="t">${it.reserved ? '<span class="badge">예약중</span>' : ""}${esc(it.title)}</div>
-          <div class="m">${esc(it.location || "지역 미표시")}${it.updated ? " · " + ago(it.updated) : ""}</div></div>
-        <div class="p">${won(it.price)}원</div></a></li>`).join("") + `</ul>`;
+    for (const s of sources) {
+      if (ok(s.data) && s.data.items.length) {
+        html += `<h2>${s.name} 매물${s.data.region ? ` <span class="sub">${esc(s.data.region)} 주변</span>` : ""}</h2>` + listHtml(s.data.items);
+      }
+    }
   }
 
-  if (hasNew) {
-    html += `<h2>새 제품 최저가 (네이버 쇼핑)</h2><ul class="list">` + n.items.map((it) => `
-      <li><a href="${esc(it.link)}" target="_blank" rel="noopener">
-        <img src="${esc(it.image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
-        <div><div class="t">${esc(it.title)}</div><div class="m">${esc(it.mall)}</div></div>
-        <div class="p">${won(it.price)}원</div></a></li>`).join("") + `</ul>`;
-  }
-
+  if (hasNew) html += `<h2>새 제품 최저가 <span class="sub">다나와</span></h2>` + listHtml(n.items);
   $("#out").innerHTML = html;
 }
 
