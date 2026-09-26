@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>중고 시세 조회</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏷️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  /* ▼ Supabase 함수 주소로 바꿔 주세요 */
+  :root{
+    --bg:#EEF1F4; --paper:#FFFFFF; --ink:#1B2230; --muted:#667085; --line:#D5DAE1;
+    --tag:#F4C542; --tag-ink:#5A4300; --new:#2A5BD7; --dot:#8A94A6; --warn:#B42318;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;line-height:1.55;font-size:16px}
+  .wrap{max-width:760px;margin:0 auto;padding:40px 20px 80px}
+  h1{font-size:28px;font-weight:700;margin:0 0 6px;letter-spacing:-.01em}
+  .lead{color:var(--muted);margin:0 0 24px}
+  form{display:grid;grid-template-columns:1fr auto;gap:8px}
+  input{font:inherit;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);width:100%}
+  input:focus-visible,button:focus-visible,a:focus-visible{outline:3px solid var(--new);outline-offset:2px}
+  #ex{grid-column:1/-1;font-size:14px;padding:10px 14px}
+  button{font:inherit;font-weight:700;padding:0 22px;border:0;border-radius:10px;background:var(--ink);color:#fff;cursor:pointer}
+  button:disabled{opacity:.5;cursor:wait}
+  .recent{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+  .recent button{background:transparent;color:var(--muted);border:1px solid var(--line);font-weight:400;font-size:13px;padding:4px 10px;border-radius:999px}
+  .msg{margin-top:28px;color:var(--muted)}
+  .msg.err{color:var(--warn)}
+
+  /* 시세 가격표 */
+  .tag{position:relative;margin-top:32px;background:var(--paper);border-radius:14px 14px 14px 14px;padding:28px 28px 24px}
+  .tag::before{content:"";position:absolute;left:18px;top:18px;width:12px;height:12px;border-radius:50%;background:var(--bg);box-shadow:inset 0 0 0 2px var(--line)}
+  .tag .q{margin:0 0 4px 22px;color:var(--muted);font-size:14px}
+  .price{font-size:clamp(40px,9vw,60px);font-weight:700;letter-spacing:-.02em;line-height:1.1;font-variant-numeric:tabular-nums}
+  .price small{font-size:.4em;font-weight:500;margin-left:4px}
+  .range{margin:6px 0 0;color:var(--muted);font-variant-numeric:tabular-nums}
+  .compare{margin:16px 0 0;padding:12px 14px;border-radius:10px;background:#EAF0FD;color:#1A3A8A;font-size:15px}
+  .compare b{font-variant-numeric:tabular-nums}
+
+  /* 분포 띠 */
+  .strip{position:relative;height:74px;margin:28px 0 6px}
+  .strip .band{position:absolute;top:22px;height:30px;background:#FBEFC8;border-radius:6px}
+  .strip .axis{position:absolute;left:0;right:0;top:37px;height:1px;background:var(--line)}
+  .strip .d{position:absolute;width:7px;height:7px;margin-left:-3.5px;border-radius:50%;background:var(--dot);opacity:.75}
+  .strip .mk{position:absolute;top:10px;bottom:10px;width:3px;margin-left:-1.5px;border-radius:2px}
+  .strip .mk.med{background:var(--tag-ink)}
+  .strip .mk.new{background:var(--new)}
+  .strip .lb{position:absolute;font-size:12px;white-space:nowrap;transform:translateX(-50%);font-variant-numeric:tabular-nums}
+  .strip .lb.med{top:-8px;color:var(--tag-ink);font-weight:700}
+  .strip .lb.new{color:var(--new);font-weight:700}
+  .strip .lb.new.top{top:-8px} .strip .lb.new.bottom{bottom:-10px}
+  .ends{position:relative;height:18px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .ends span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+  .note{font-size:13px;color:var(--muted);margin:14px 0 0}
+
+  h2{font-size:18px;margin:40px 0 10px}
+  .list{list-style:none;margin:0;padding:0;background:var(--paper);border-radius:14px;overflow:hidden}
+  .list li+li{border-top:1px solid var(--bg)}
+  .list a{display:grid;grid-template-columns:56px 1fr auto;gap:14px;align-items:center;padding:12px 16px;color:inherit;text-decoration:none}
+  .list a:hover{background:#F7F8FA}
+  .list img{width:56px;height:56px;object-fit:cover;border-radius:8px;background:var(--bg)}
+  .list .t{font-size:15px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .list .m{font-size:12px;color:var(--muted)}
+  .list .p{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:4px;background:#FDE7E7;color:var(--warn);margin-right:4px}
+  footer{margin-top:48px;font-size:13px;color:var(--muted)}
+  @media (max-width:520px){ .tag{padding:24px 18px 20px} .list a{grid-template-columns:48px 1fr;} .list .p{grid-column:2} .list img{width:48px;height:48px} }
+  @media (prefers-reduced-motion:no-preference){ .tag{animation:in .25s ease-out} @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>중고 시세 조회</h1>
+  <p class="lead">제품명을 넣으면 번개장터에 올라온 중고 매물 가격과 네이버 쇼핑 새 제품 가격을 함께 보여 줍니다.</p>
+
+  <form id="f" autocomplete="off">
+    <input id="q" type="search" placeholder="예: 아이패드 에어5, 닌텐도 스위치 OLED" required maxlength="60" aria-label="제품명">
+    <button id="go" type="submit">조회</button>
+    <input id="ex" type="text" placeholder="제외할 단어 (쉼표로 구분, 예: 프로, 케이스, 펜슬)" aria-label="제외할 단어">
+  </form>
+  <div class="recent" id="recent"></div>
+
+  <div id="out"></div>
+
+  <footer>
+    가격은 조회 시점에 올라와 있는 판매 글 기준의 대략적인 값입니다. 광고·구매 희망 글·부품용 글과 지나치게 높거나 낮은 가격은 빼고 계산합니다.
+    실제 거래 가격은 상태·구성품·보증 여부에 따라 달라집니다.
+  </footer>
+</div>
+
+<script>
+const FUNCTION_URL = "https://YOUR-PROJECT.supabase.co/functions/v1/price"; // ← 바꿀 곳
+
+const $ = (s) => document.querySelector(s);
+const won = (n) => Number(n).toLocaleString("ko-KR");
+const man = (n) => n >= 10000 ? (Math.round(n / 1000) / 10).toLocaleString("ko-KR") + "만" : won(n);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+// 최근 검색어 (이 브라우저에만 저장)
+function loadRecent(){ try { return JSON.parse(localStorage.getItem("recent") || "[]"); } catch { return []; } }
+function saveRecent(q){ try { const r = [q, ...loadRecent().filter((x) => x !== q)].slice(0, 8); localStorage.setItem("recent", JSON.stringify(r)); } catch {} }
+function drawRecent(){
+  $("#recent").innerHTML = loadRecent().map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("");
+}
+$("#recent").addEventListener("click", (e) => { const q = e.target.dataset?.q; if (q) { $("#q").value = q; search(); } });
+
+$("#f").addEventListener("submit", (e) => { e.preventDefault(); search(); });
+
+async function search(){
+  const q = $("#q").value.trim(); if (!q) return;
+  const ex = $("#ex").value.trim();
+  $("#go").disabled = true;
+  $("#out").innerHTML = `<p class="msg">가격을 모으는 중입니다…</p>`;
+  try {
+    if (FUNCTION_URL.includes("YOUR-PROJECT")) throw new Error("index.html의 FUNCTION_URL을 Supabase 함수 주소로 바꿔 주세요.");
+    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `조회 실패 (${res.status})`);
+    saveRecent(q); drawRecent();
+    render(data);
+  } catch (err) {
+    $("#out").innerHTML = `<p class="msg err">${esc(err.message)}</p>`;
+  } finally {
+    $("#go").disabled = false;
+  }
+}
+
+function render(d){
+  const u = d.used, n = d.new;
+  const hasUsed = u && u.stats && u.stats.count > 0;
+  const hasNew = n && n.stats && n.stats.count > 0;
+  let html = "";
+
+  if (!hasUsed) {
+    html += `<p class="msg">${u?.error ? "번개장터 조회 실패: " + esc(u.error) : "조건에 맞는 중고 매물이 없습니다. 검색어를 줄이거나 띄어쓰기를 바꿔 보세요."}</p>`;
+  } else {
+    const s = u.stats;
+    const lo = Math.min(s.min, hasNew ? n.stats.median : Infinity);
+    const hi = Math.max(s.max, hasNew ? n.stats.median : 0);
+    const pad = (hi - lo) * 0.08 || hi * 0.05 || 1;
+    const a = lo - pad, b = hi + pad;
+    const pos = (v) => ((v - a) / (b - a) * 100).toFixed(2) + "%";
+    // 가장자리 라벨이 잘리지 않도록 정렬 방향 조정
+    const tx = (v) => { const x = parseFloat(pos(v)); return x < 18 ? ";transform:translateX(-8px)" : x > 82 ? ";transform:translateX(calc(-100% + 8px))" : ""; };
+
+    // 점이 겹치지 않도록 줄을 나눠 배치
+    const dots = u.prices.map((p, i) => `<span class="d" style="left:${pos(p)};top:${24 + (i % 4) * 7}px"></span>`).join("");
+
+    html += `<section class="tag" aria-label="중고 시세">
+      <p class="q">“${esc(d.query)}” 중고 시세 (중간값)</p>
+      <div class="price">${won(s.median)}<small>원</small></div>
+      <p class="range">대부분 ${won(s.p25)} ~ ${won(s.p75)}원 · 평균 ${won(s.mean)}원 · 매물 ${s.count}건</p>
+      ${hasNew ? `<p class="compare">새 제품 가격(중간값) <b>${won(n.stats.median)}원</b>, 최저 <b>${won(n.stats.min)}원</b> — 중고 시세는 새 제품의 약 <b>${d.ratio}%</b> 수준입니다.</p>`
+               : `<p class="compare">새 제품 가격을 가져오지 못했습니다${n?.error ? " (" + esc(n.error) + ")" : ""}.</p>`}
+      <div class="strip" role="img" aria-label="매물 가격 분포: 최저 ${won(s.min)}원, 최고 ${won(s.max)}원, 중간값 ${won(s.median)}원">
+        <div class="band" style="left:${pos(s.p25)};width:calc(${pos(s.p75)} - ${pos(s.p25)})"></div>
+        <div class="axis"></div>
+        ${dots}
+        <div class="mk med" style="left:${pos(s.median)}"></div>
+        <div class="lb med" style="left:${pos(s.median)}${tx(s.median)}">중고 ${man(s.median)}</div>
+        ${hasNew ? `<div class="mk new" style="left:${pos(n.stats.median)}"></div><div class="lb new ${Math.abs(parseFloat(pos(n.stats.median)) - parseFloat(pos(s.median))) < 18 ? "bottom" : "top"}" style="left:${pos(n.stats.median)}${tx(n.stats.median)}">새 제품 ${man(n.stats.median)}</div>` : ""}
+      </div>
+      <div class="ends"><span style="left:${pos(s.min)}${tx(s.min)}">최저 ${won(s.min)}원</span><span style="left:${pos(s.max)}${tx(s.max)}">최고 ${won(s.max)}원</span></div>
+      <p class="note">점 하나가 매물 하나, 노란 띠는 가운데 50% 가격대입니다. 극단값 ${u.excludedOutliers}건 제외 · ${new Date(d.checkedAt).toLocaleString("ko-KR")} 기준</p>
+    </section>`;
+
+    html += `<h2>번개장터 매물</h2><ul class="list">` + u.items.map((it) => `
+      <li><a href="${esc(it.link)}" target="_blank" rel="noopener">
+        <img src="${esc(it.image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+        <div><div class="t">${it.reserved ? '<span class="badge">예약중</span>' : ""}${esc(it.title)}</div>
+          <div class="m">${esc(it.location || "지역 미표시")}${it.updated ? " · " + ago(it.updated) : ""}</div></div>
+        <div class="p">${won(it.price)}원</div></a></li>`).join("") + `</ul>`;
+  }
+
+  if (hasNew) {
+    html += `<h2>새 제품 최저가 (네이버 쇼핑)</h2><ul class="list">` + n.items.map((it) => `
+      <li><a href="${esc(it.link)}" target="_blank" rel="noopener">
+        <img src="${esc(it.image)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+        <div><div class="t">${esc(it.title)}</div><div class="m">${esc(it.mall)}</div></div>
+        <div class="p">${won(it.price)}원</div></a></li>`).join("") + `</ul>`;
+  }
+
+  $("#out").innerHTML = html;
+}
+
+function ago(ms){
+  const m = Math.floor((Date.now() - ms) / 60000);
+  if (m < 60) return `${Math.max(m, 1)}분 전`;
+  const h = Math.floor(m / 60); if (h < 24) return `${h}시간 전`;
+  const d = Math.floor(h / 24); return d < 30 ? `${d}일 전` : `${Math.floor(d / 30)}개월 전`;
+}
+
+drawRecent();
+const params = new URLSearchParams(location.search);
+if (params.get("q")) { $("#q").value = params.get("q"); search(); }
+</script>
+</body>
+</html>
