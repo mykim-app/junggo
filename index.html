@@ -27,8 +27,16 @@
   button{font:inherit;font-weight:700;padding:0 22px;border:0;border-radius:10px;background:var(--ink);color:#fff;cursor:pointer}
   button:disabled{opacity:.5;cursor:wait}
   .recent{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
-  .recent button{background:transparent;color:var(--muted);border:1px solid var(--line);font-weight:400;font-size:13px;padding:4px 10px;border-radius:999px}
+  .recent{align-items:center}
+  .recent button{font-weight:400;font-size:13px;background:transparent;color:var(--muted);border:0;padding:0}
+  .chip{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;background:var(--paper)}
+  .chip .go{padding:4px 4px 4px 10px;color:var(--ink)}
+  .chip .del{padding:4px 9px 4px 4px;font-size:15px;line-height:1}
+  .chip .del:hover{color:var(--warn)}
+  .recent .clear{margin-left:4px;text-decoration:underline;text-underline-offset:3px}
   .msg{margin-top:28px;color:var(--muted)}
+  .saved{margin:28px 0 -16px;font-size:14px;color:var(--muted)}
+  .saved button{font:inherit;font-size:14px;margin-left:6px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);background:var(--paper);color:var(--ink);cursor:pointer}
   .msg.err{color:var(--warn)}
 
   /* 시세 가격표 */
@@ -125,23 +133,80 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;
 function loadRecent(){ try { return JSON.parse(localStorage.getItem("recent") || "[]"); } catch { return []; } }
 function saveRecent(q){ try { const r = [q, ...loadRecent().filter((x) => x !== q)].slice(0, 8); localStorage.setItem("recent", JSON.stringify(r)); } catch {} }
 function drawRecent(){
-  $("#recent").innerHTML = loadRecent().map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("");
+  const r = loadRecent();
+  $("#recent").innerHTML = r.map((q) => `<span class="chip"><button type="button" class="go" data-q="${esc(q)}">${esc(q)}</button><button type="button" class="del" data-del="${esc(q)}" aria-label="${esc(q)} 기록 지우기">×</button></span>`).join("")
+    + (r.length ? `<button type="button" class="clear" data-clear="1">기록 모두 지우기</button>` : "");
 }
-$("#recent").addEventListener("click", (e) => { const q = e.target.dataset?.q; if (q) { $("#q").value = q; search(); } });
+function removeRecent(q){
+  try {
+    localStorage.setItem("recent", JSON.stringify(loadRecent().filter((x) => x !== q)));
+    const all = loadResults(); for (const k of Object.keys(all)) if (k.split("|")[0] === q) delete all[k];
+    localStorage.setItem("results", JSON.stringify(all));
+  } catch {}
+  drawRecent();
+}
+$("#recent").addEventListener("click", (e) => {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.clear) { try { localStorage.removeItem("recent"); localStorage.removeItem("results"); } catch {} drawRecent(); return; }
+  if (t.dataset.del) { removeRecent(t.dataset.del); return; }
+  if (t.dataset.q) { $("#q").value = t.dataset.q; search(); }
+});
 
 $("#f").addEventListener("submit", (e) => { e.preventDefault(); search(); });
 
-async function search(){
+// ---- 조회 결과 저장 (이 브라우저에만) ----
+// 당근은 같은 조회가 짧은 시간에 반복되면 빈 결과를 주므로, 10분 안의 같은 조회는 저장된 결과를 다시 보여 주고
+// 새로 조회했는데 당근만 비어 있으면 24시간 안의 이전 당근 결과로 대신 표시
+const RESULT_FRESH_MS = 10 * 60 * 1000;
+const DAANGN_KEEP_MS = 24 * 60 * 60 * 1000;
+function loadResults(){ try { return JSON.parse(localStorage.getItem("results") || "{}"); } catch { return {}; } }
+function saveResult(key, data){
+  try {
+    const all = loadResults(); all[key] = { t: Date.now(), data };
+    const keys = Object.keys(all).sort((x, y) => all[y].t - all[x].t);
+    for (const k of keys.slice(20)) delete all[k]; // 최근 20건만 보관
+    localStorage.setItem("results", JSON.stringify(all));
+  } catch {}
+}
+const qtl = (arr, p) => { if (!arr.length) return 0; const i = (arr.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i); return Math.round(arr[lo] + (arr[hi] - arr[lo]) * (i - lo)); };
+function summarizeJs(prices){
+  const a = [...prices].sort((x, y) => x - y);
+  return { count: a.length, min: a[0] ?? 0, max: a[a.length - 1] ?? 0, p25: qtl(a, .25), median: qtl(a, .5), p75: qtl(a, .75),
+           mean: a.length ? Math.round(a.reduce((s, v) => s + v, 0) / a.length / 100) * 100 : 0 };
+}
+
+async function search(force = false){
   const q = $("#q").value.trim(); if (!q) return;
   const ex = $("#ex").value.trim();
+  const key = `${q}|${ex}`;
+  const saved = loadResults()[key];
+
+  if (!force && saved && Date.now() - saved.t < RESULT_FRESH_MS) {
+    saveRecent(q); drawRecent();
+    render(saved.data, saved.t);
+    return;
+  }
+
   $("#go").disabled = true;
   $("#out").innerHTML = `<p class="msg">가격을 모으는 중입니다…</p>`;
   try {
     if (FUNCTION_URL.includes("YOUR-PROJECT")) throw new Error("index.html의 FUNCTION_URL을 Supabase 함수 주소로 바꿔 주세요.");
     // 당근·번개장터가 국내 접속을 기준으로 응답하므로 서울 지역에서 실행
-    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&forceFunctionRegion=ap-northeast-2`);
+    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `조회 실패 (${res.status})`);
+
+    // 당근만 비어 있으면 이전 당근 결과로 대신하고 통합 시세를 다시 계산
+    const dNow = data.daangn, dOld = saved?.data?.daangn;
+    const empty = !dNow?.stats?.count;
+    const oldOk = dOld?.stats?.count && Date.now() - Date.parse(dOld.fetchedAt || saved.t) < DAANGN_KEEP_MS;
+    if (empty && oldOk) {
+      data.daangn = dOld;
+      const merged = [...(data.bunjang?.prices || []), ...dOld.prices];
+      data.combined = { stats: summarizeJs(merged) };
+      if (data.new?.stats?.median) data.ratio = Math.round(data.combined.stats.median / data.new.stats.median * 100);
+    }
+    saveResult(key, data);
     saveRecent(q); drawRecent();
     render(data);
   } catch (err) {
@@ -160,7 +225,7 @@ function listHtml(items){
       <div class="p">${won(it.price)}원</div></a></li>`).join("") + `</ul>`;
 }
 
-function render(d){
+function render(d, savedAt){
   const sources = [
     { key: "bunjang", name: "번개장터", cls: "bj", data: d.bunjang },
     { key: "daangn", name: "당근마켓", cls: "dg", data: d.daangn },
@@ -204,9 +269,14 @@ function render(d){
     if (s.data?.error) return `<li><span class="key ${s.cls}"></span>${s.name}: 조회 실패 (${esc(s.data.error)})</li>`;
     if (!ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 조건에 맞는 매물 없음</li>`;
     const st = s.data.stats;
-    return `<li><span class="key ${s.cls}"></span>${s.name} <b>${won(st.median)}원</b> (${st.count}건${s.data.region ? ", " + esc(s.data.region) + " 주변" : ""})</li>`;
+    const when = s.data.fetchedAt && Date.now() - Date.parse(s.data.fetchedAt) > 5 * 60000 ? ", " + ago(Date.parse(s.data.fetchedAt)) + " 조회" : "";
+    return `<li><span class="key ${s.cls}"></span>${s.name} <b>${won(st.median)}원</b> (${st.count}건${s.data.region ? ", " + esc(s.data.region) + " 주변" : ""}${when})</li>`;
   }).join("");
 
+  if (savedAt) {
+    const m = Math.max(1, Math.round((Date.now() - savedAt) / 60000));
+    html += `<p class="saved">${m}분 전에 조회한 결과입니다. <button type="button" id="refresh">새로 조회</button></p>`;
+  }
   html += `<section class="tag" aria-label="중고 시세">`;
   if (hasSold) {
     html += `
@@ -251,6 +321,7 @@ function render(d){
   }
   if (hasNew) html += `<h2>새 제품 최저가 <span class="sub">다나와</span></h2>` + listHtml(n.items);
   $("#out").innerHTML = html;
+  $("#refresh")?.addEventListener("click", () => search(true));
 }
 
 function ago(ms){

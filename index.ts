@@ -10,6 +10,10 @@ const ALLOWED = (Deno.env.get("ALLOWED_ORIGIN") ?? "https://mykim-app.github.io"
   .split(",").map((s) => s.trim().replace(/\/$/, "")).filter(Boolean);
 // 당근 검색 기준 동네: "동이름-지역번호" (기본 송도동)
 const DAANGN_REGION = Deno.env.get("DAANGN_REGION") ?? "송도동-6543";
+// 당근은 클라우드(데이터센터) 접속에는 매물을 비워서 돌려주므로, 국내 가정 인터넷의 NAS를 거쳐 조회
+// 설정값: DAANGN_PROXY_URL=https://dsproxy.igc.or.kr  DAANGN_PROXY_KEY=(README 6번 참고)
+const DAANGN_PROXY_URL = (Deno.env.get("DAANGN_PROXY_URL") ?? "").replace(/\/$/, "");
+const DAANGN_PROXY_KEY = Deno.env.get("DAANGN_PROXY_KEY") ?? "";
 
 const corsFor = (origin: string | null) => ({
   "Access-Control-Allow-Origin": origin && ALLOWED.includes(origin) ? origin : ALLOWED[0],
@@ -180,6 +184,15 @@ async function fetchBunjangSold(q: string, exclude: string[], days: number) {
 // ---------- 당근마켓 ----------
 // 공식 API가 없어 웹 검색 화면에 담긴 자료(__remixContext)를 읽음
 async function fetchDaangnOnce(q: string) {
+  if (DAANGN_PROXY_URL) {
+    const r = await fetch(`${DAANGN_PROXY_URL}/daangn?q=${encodeURIComponent(q)}&region=${encodeURIComponent(DAANGN_REGION)}`, {
+      headers: { "X-Proxy-Key": DAANGN_PROXY_KEY },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) throw new Error(`NAS 중계 응답 오류 (${r.status})`);
+    const j = await r.json();
+    return { region: j.region ?? DAANGN_REGION, articles: Array.isArray(j.articles) ? j.articles : [] };
+  }
   const url = `https://www.daangn.com/kr/buy-sell/?in=${encodeURIComponent(DAANGN_REGION)}&search=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
     headers: {
@@ -203,13 +216,27 @@ async function fetchDaangnOnce(q: string) {
   };
 }
 
+// 당근은 짧은 시간에 요청이 반복되면 같은 접속 주소에 빈 결과를 돌려줌 → 다시 시도하지 않고, 성공한 결과를 저장해 재사용
+const daangnCache = new Map<string, { t: number; region: string; articles: any[] }>();
+const DAANGN_FRESH_MS = 30 * 60 * 1000;      // 30분 안의 결과는 당근에 다시 묻지 않음
+const DAANGN_FALLBACK_MS = 24 * 60 * 60 * 1000; // 빈 결과가 오면 24시간 안의 이전 결과로 대신 표시
+
 async function fetchDaangn(q: string, exclude: string[]) {
-  // 당근은 간헐적으로 빈 결과를 주는 경우가 있어 최대 3회 시도
-  let got = { region: DAANGN_REGION, articles: [] as any[] };
-  for (let t = 0; t < 3; t++) {
+  const key = `${DAANGN_REGION}|${q}`;
+  const now = Date.now();
+  const hit = daangnCache.get(key);
+  let got: { region: string; articles: any[] };
+  let fetchedAt = now;
+  if (hit && now - hit.t < DAANGN_FRESH_MS) {
+    got = hit; fetchedAt = hit.t;
+  } else {
     got = await fetchDaangnOnce(q);
-    if (got.articles.length) break;
-    await new Promise((r) => setTimeout(r, 600));
+    if (got.articles.length) {
+      daangnCache.set(key, { t: now, ...got });
+      for (const [k, v] of daangnCache) if (now - v.t > DAANGN_FALLBACK_MS) daangnCache.delete(k);
+    } else if (hit && now - hit.t < DAANGN_FALLBACK_MS) {
+      got = hit; fetchedAt = hit.t;
+    }
   }
   const listings: Listing[] = got.articles
     .filter((x) => ["Ongoing", "Reserved"].includes(String(x.status)))
@@ -226,6 +253,7 @@ async function fetchDaangn(q: string, exclude: string[]) {
   return aggregate("당근마켓", filterListings(listings, q, exclude), {
     searched: got.articles.length,
     region: got.region,
+    fetchedAt: new Date(fetchedAt).toISOString(),
   });
 }
 
