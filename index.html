@@ -117,7 +117,7 @@
 
   <footer>
     평균 거래 가격은 번개장터에서 최근 30일 안에 판매완료 처리된 글의 가격 기준입니다(판매완료 처리 시점을 거래일로 봄, 당근마켓은 거래완료 글을 공개하지 않아 제외). 광고, 구매 희망 글, 부품용 글, 케이스·필름 같은 액세서리 글과 지나치게 높거나 낮은 가격은 빼고 계산합니다. 당근마켓은 동네 기준 서비스라 설정한 동네 주변 매물만 반영됩니다.
-    새 제품가는 다나와 검색 1순위 상품의 최저가이며, 단종 제품은 남은 재고 가격이라 실제보다 높게 나올 수 있습니다. 실제 거래 가격은 상태·구성품·보증 여부에 따라 달라집니다.
+    새 제품가는 다나와 검색 1순위 상품의 최저가입니다. 단종으로 추정되는 제품(등록 후 1년 6개월 이상 지났고 최저가가 출시가보다 비싼 제품)은 출시가로 표시합니다. 실제 거래 가격은 상태·구성품·보증 여부에 따라 달라집니다.
   </footer>
 </div>
 
@@ -293,7 +293,9 @@ function render(d, savedAt){
     html += `<div class="now"><p>지금 판매 중인 매물 중간값 <b>${won(c.median)}원</b> (${c.count}건, 대부분 ${won(c.p25)} ~ ${won(c.p75)}원)</p><ul class="src">${perSource}</ul></div>`;
   }
   html += hasNew
-    ? `<p class="compare">새 제품 다나와 최저가 <b>${won(n.stats.median)}원</b> (${esc(n.rep?.title ?? "")}). ${hasSold ? "최근 평균 거래 가격" : "중고 시세"}은 새 제품의 약 <b>${hasSold ? d.soldRatio : d.ratio}%</b> 수준입니다.</p>`
+    ? `<p class="compare">${n.rep?.discontinued
+        ? `새 제품 출시가 <b>${won(n.stats.median)}원</b> (${esc(n.rep.title)}, 단종 추정 제품이라 출시가 기준, 현재 남은 재고 최저가 ${won(n.rep.lowest)}원). `
+        : `새 제품 다나와 최저가 <b>${won(n.stats.median)}원</b> (${esc(n.rep?.title ?? "")}). `}${hasSold ? "최근 평균 거래 가격" : "중고 시세"}은 새 제품의 약 <b>${hasSold ? d.soldRatio : d.ratio}%</b> 수준입니다.</p>`
     : `<p class="compare">새 제품 가격을 가져오지 못했습니다${n?.error ? " (" + esc(n.error) + ")" : ""}.</p>`;
 
   html += `
@@ -319,7 +321,7 @@ function render(d, savedAt){
       html += `<h2>${s.name} 판매 중 매물${s.data.region ? ` <span class="sub">${esc(s.data.region)} 주변</span>` : ""}</h2>` + listHtml(s.data.items);
     }
   }
-  if (hasNew) html += `<h2>새 제품 최저가 <span class="sub">다나와</span></h2>` + listHtml(n.items);
+  if (hasNew) html += `<h2>새 제품 가격 <span class="sub">다나와 최저가, 단종 추정 제품은 출시가</span></h2>` + listHtml(n.items);
   $("#out").innerHTML = html;
   $("#refresh")?.addEventListener("click", () => search(true));
 }

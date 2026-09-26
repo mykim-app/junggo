@@ -10,8 +10,8 @@ const ALLOWED = (Deno.env.get("ALLOWED_ORIGIN") ?? "https://mykim-app.github.io"
   .split(",").map((s) => s.trim().replace(/\/$/, "")).filter(Boolean);
 // 당근 검색 기준 동네: "동이름-지역번호" (기본 송도동)
 const DAANGN_REGION = Deno.env.get("DAANGN_REGION") ?? "송도동-6543";
-// 당근은 클라우드(데이터센터) 접속에는 매물을 비워서 돌려주므로, 국내 가정 인터넷의 NAS를 거쳐 조회
-// 설정값: DAANGN_PROXY_URL=https://dsproxy.igc.or.kr  DAANGN_PROXY_KEY=(README 6번 참고)
+// 당근을 다른 서버(중계)를 거쳐 조회하고 싶을 때만 사용
+// (선택) 설정값: DAANGN_PROXY_URL=중계 주소, DAANGN_PROXY_KEY=중계 인증값. 비워 두면 Supabase가 직접 조회
 const DAANGN_PROXY_URL = (Deno.env.get("DAANGN_PROXY_URL") ?? "").replace(/\/$/, "");
 const DAANGN_PROXY_KEY = Deno.env.get("DAANGN_PROXY_KEY") ?? "";
 
@@ -277,7 +277,11 @@ async function fetchDanawa(q: string, exclude: string[]) {
 
   // 상품명 영역(prod_name)을 기준으로 나눠 이름·링크·첫 가격·이미지를 읽음
   const parts = html.split('class="prod_name"');
-  const raw: { title: string; price: number; link: string; image: string; mall: string }[] = [];
+  type Item = {
+    title: string; price: number; link: string; image: string; mall: string;
+    lowest: number; release: number | null; discontinued: boolean; registered: string | null;
+  };
+  const raw: Item[] = [];
   for (let k = 1; k < parts.length; k++) {
     const seg = parts[k];
     const prev = parts[k - 1].slice(-6000);
@@ -289,12 +293,26 @@ async function fetchDanawa(q: string, exclude: string[]) {
     const imgs = [...prev.matchAll(/<img[^>]+(?:data-original|src)="([^"]+)"/g)];
     let image = imgs.pop()?.[1] ?? "";
     if (image.startsWith("//")) image = "https:" + image;
+    const lowest = Number(p[1].replace(/,/g, ""));
+    const rel = seg.match(/출시가:\s*([\d,]+)원/);
+    const release = rel ? Number(rel[1].replace(/,/g, "")) : null;
+    // 다나와 등록월 (예: "22.04. 등록")
+    const regM = decode(seg.slice(0, 40000)).match(/(\d{2})\.(\d{2})\.\s*등록/);
+    const regDate = regM ? new Date(2000 + Number(regM[1]), Number(regM[2]) - 1, 1) : null;
+    const ageMonths = regDate ? (Date.now() - regDate.getTime()) / (30.4 * 86400000) : 0;
+    // 다나와는 단종 여부를 따로 표시하지 않음 → 등록 후 18개월 이상 지났고 최저가가 출시가보다 비싸면
+    // 남은 재고 가격으로 보고 단종으로 추정 (신제품의 일시적 웃돈은 제외)
+    const discontinued = !!release && lowest > release && ageMonths >= 18;
     raw.push({
       title: decode(m[2]),
-      price: Number(p[1].replace(/,/g, "")),
+      price: discontinued ? release! : lowest, // 단종 추정 제품은 출시가로 표시
       link: m[1].replace(/&amp;/g, "&"),
       image,
-      mall: "다나와 최저가",
+      mall: discontinued ? `출시가, 단종 추정 (현재 최저가 ${lowest.toLocaleString("ko-KR")}원)` : "다나와 최저가",
+      lowest,
+      release,
+      discontinued,
+      registered: regM ? `20${regM[1]}.${regM[2]}.` : null,
     });
   }
 
