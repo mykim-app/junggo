@@ -98,13 +98,46 @@ type Listing = {
 };
 
 // 판매 글 기준 공통 거르기: 가격 범위·형식 가격·검색어 포함·제외어
+// 파생 모델(울트라·플러스·프로 등): 검색어에 없으면 다른 제품으로 보고 제외
+const VARIANT_KO = ["프로", "플러스", "맥스", "울트라", "미니", "클래식", "라이트", "엣지"];
+const VARIANT_EN = ["pro", "plus", "max", "ultra", "mini", "lite", "fe", "edge", "classic"];
+function variantWords(q: string): string[] {
+  const t = q.toLowerCase();
+  const qEn = toEnglish(norm(q));
+  return [...VARIANT_KO.filter((v) => !t.includes(v)), ...VARIANT_EN.filter((v) => !qEn.includes(v))];
+}
+function isOtherVariant(title: string, q: string, words: string[]): boolean {
+  const spaced = title.toLowerCase();
+  for (const w of words) {
+    if (/^[a-z]+$/.test(w)) {
+      // 영문은 단어 경계로만 판단 (예: "safe"의 fe 제외), 숫자 바로 뒤는 허용 (예: s26ultra, 14pro)
+      if (new RegExp(`(^|[^a-z])${w}([^a-z]|$)`).test(spaced)) return true;
+    } else if (norm(title).includes(w)) return true;
+  }
+  // "S26+"처럼 모델명 바로 뒤의 +는 플러스 모델
+  if (!q.includes("+")) {
+    for (const tk of tokens(q)) if (/\d$/.test(tk) && (norm(title).includes(tk + "+"))) return true;
+  }
+  return false;
+}
+
+// 검색어 조각의 다른 표기 (예: "s26+" → "s26플러스"·"s26plus", "아이패드" → "ipad")
+function tokenForms(t: string): string[] {
+  const forms = [t, toEnglish(t)];
+  if (t.endsWith("+") && t.length > 1) forms.push(t.slice(0, -1) + "플러스", t.slice(0, -1) + "plus");
+  return [...new Set(forms)];
+}
+const matchesAll = (title: string, q: string) => tokens(q).every((t) => tokenForms(t).some((f) => hasToken(title, f)));
+
 function filterListings(list: Listing[], q: string, exclude: string[]): Listing[] {
+  const variants = variantWords(q);
   const qTokens = tokens(q);
   const banned = [...NOT_FOR_SALE, ...exclude].map(norm).filter(Boolean);
   return list.filter((x) => {
     if (!Number.isFinite(x.price) || x.price < 1000 || x.price > 50_000_000 || isDummyPrice(x.price)) return false;
     const name = norm(x.title);
-    if (!qTokens.every((t) => hasToken(x.title, t))) return false; // 검색어가 모두 제목에 있어야 함
+    if (!matchesAll(x.title, q)) return false; // 검색어가 모두 제목에 있어야 함
+    if (isOtherVariant(x.title, q, variants)) return false; // 검색어에 없는 파생 모델 제외
     if (banned.some((b) => name.includes(b))) return false;
     const acc = ACCESSORY.filter((w) => !qTokens.some((t) => t.includes(w) || w.includes(t)));
     if (acc.some((w) => name.includes(w)) && !BUNDLE.some((m) => name.includes(m))) return false;
@@ -348,8 +381,7 @@ async function fetchDanawa(q: string, exclude: string[]) {
   // 애플 제품처럼 상품명이 영문인 경우를 위해 흔한 한글 표기는 영문으로도 맞춰 봄
   const qTokens = tokens(q);
   const acc = ACCESSORY.filter((w) => !qTokens.some((t) => t.includes(w) || w.includes(t)));
-  const matches = (title: string) =>
-    qTokens.every((t) => hasToken(title, t) || hasToken(title, toEnglish(t)));
+  const matches = (title: string) => matchesAll(title, q);
   const bundleOk = q.includes("+");
   const candidates = raw.filter((x) =>
     x.price > 0 && matches(x.title) &&
@@ -381,10 +413,8 @@ async function fetchDanawa(q: string, exclude: string[]) {
   for (let i = candidates.length - 1; i >= 0; i--) if (candidates[i].price < midP * 0.3) candidates.splice(i, 1);
 
   // 검색어에 없는 파생 모델(프로·플러스·클래식 등)보다 기본 모델을 대표 제품으로 우선
-  const VARIANT = ["프로", "pro", "플러스", "plus", "맥스", "max", "울트라", "ultra", "미니", "mini", "클래식", "라이트", "lite", "fe", "엣지", "edge"];
-  const extra = VARIANT.filter((v) => !qTokens.some((t) => t.includes(v) || toEnglish(t).includes(v)));
-  const variantCount = (title: string) => extra.filter((v) => norm(title).includes(v)).length;
-  candidates.sort((a, b) => variantCount(a.title) - variantCount(b.title)); // 같은 조건이면 다나와 순서 유지
+  const vw = variantWords(q);
+  candidates.sort((a, b) => Number(isOtherVariant(a.title, q, vw)) - Number(isOtherVariant(b.title, q, vw))); // 같은 조건이면 다나와 순서 유지
 
   // 다나와 검색 1순위 상품을 대표 제품으로 보고, 가격대가 비슷한(0.5~2배) 상품만 함께 표시
   const rep = candidates[0];
@@ -413,6 +443,10 @@ Deno.serve(async (req) => {
     });
 
   if (!q) return json({ error: "검색어(q)를 입력하세요" }, 400);
+  if (u.searchParams.get("only") === "daangn") {
+    try { const dg: any = await fetchDaangn(q, exclude); delete dg.candidatePrices; return json({ query: q, daangn: dg }); }
+    catch (e) { return json({ query: q, daangn: { error: String((e as Error)?.message ?? e) } }); }
+  }
   const days = Math.min(Math.max(Number(u.searchParams.get("days") ?? 30) || 30, 7), 90);
 
   const [bj, dg, nv, sd] = await Promise.allSettled([

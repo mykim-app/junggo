@@ -50,7 +50,7 @@
   .compare b{font-variant-numeric:tabular-nums}
 
   /* 분포 띠 */
-  .strip{position:relative;height:92px;margin:30px 0 8px}
+  .strip{position:relative;height:92px;margin:42px 0 8px}
   .strip .band{position:absolute;top:10px;height:72px;background:#FBEFC8;border-radius:6px}
   .strip .axis{position:absolute;left:0;right:0;top:44px;height:1px;background:var(--line)}
   .strip .d{position:absolute;width:7px;height:7px;margin-left:-3.5px;border-radius:50%;background:var(--dot);opacity:.8}
@@ -58,7 +58,7 @@
   .strip .d.sd{background:var(--sold)}
   .strip .mk.sold{background:var(--sold)}
   .strip .lb.sold{color:var(--sold);font-weight:700}
-  .strip .lb.top{top:-10px} .strip .lb.bottom{bottom:-12px}
+  .strip .lb.top{top:-10px} .strip .lb.bottom{bottom:-12px} .strip .lb.top2{top:-28px}
   .now{margin:16px 0 0;padding-top:14px;border-top:1px dashed var(--line);font-size:15px}
   .now p{margin:0}
   .now b{font-variant-numeric:tabular-nums}
@@ -175,6 +175,24 @@ function summarizeJs(prices){
            mean: a.length ? Math.round(a.reduce((s, v) => s + v, 0) / a.length / 100) * 100 : 0 };
 }
 
+// 당근은 첫 요청에 빈 결과를 주고 잠시 뒤 다시 물으면 나오는 경우가 있어, 비었을 때 한 번만 다시 확인
+async function retryDaangn(q, ex, key, data){
+  await new Promise((r) => setTimeout(r, 2500));
+  try {
+    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&only=daangn&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
+    const j = await res.json();
+    data._daangnRetrying = false;
+    if (j.daangn?.stats?.count) {
+      data.daangn = j.daangn;
+      data.combined = { stats: summarizeJs([...(data.bunjang?.prices || []), ...j.daangn.prices]) };
+      if (data.new?.stats?.median) data.ratio = Math.round(data.combined.stats.median / data.new.stats.median * 100);
+      saveResult(key, data);
+    }
+  } catch {}
+  data._daangnRetrying = false;
+  if ($("#q").value.trim() === q) render(data); // 그사이 다른 검색을 했으면 화면을 바꾸지 않음
+}
+
 async function search(force = false){
   const q = $("#q").value.trim(); if (!q) return;
   const ex = $("#ex").value.trim();
@@ -208,7 +226,10 @@ async function search(force = false){
     }
     saveResult(key, data);
     saveRecent(q); drawRecent();
+    const needRetry = !data.daangn?.stats?.count;
+    data._daangnRetrying = needRetry;
     render(data);
+    if (needRetry) retryDaangn(q, ex, key, data);
   } catch (err) {
     $("#out").innerHTML = `<p class="msg err">${esc(err.message)}</p>`;
   } finally {
@@ -270,6 +291,7 @@ function render(d, savedAt){
 
   const perSource = sources.map((s) => {
     if (s.data?.error) return `<li><span class="key ${s.cls}"></span>${s.name}: 조회 실패 (${esc(s.data.error)})</li>`;
+    if (s.key === "daangn" && d._daangnRetrying) return `<li><span class="key ${s.cls}"></span>${s.name}: 다시 확인 중…</li>`;
     if (!ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 조건에 맞는 매물 없음</li>`;
     const st = s.data.stats;
     const when = s.data.fetchedAt && Date.now() - Date.parse(s.data.fetchedAt) > 5 * 60000 ? ", " + ago(Date.parse(s.data.fetchedAt)) + " 조회" : "";
@@ -310,7 +332,7 @@ function render(d, savedAt){
         ${soldDots}${listDots}
         ${hasSold ? `<div class="mk sold" style="left:${pos(sold.stats.mean)}"></div><div class="lb sold top" style="left:${pos(sold.stats.mean)}${tx(sold.stats.mean)}">거래 평균 ${man(sold.stats.mean)}</div>` : ""}
         ${hasList ? `<div class="mk med" style="left:${pos(c.median)}"></div><div class="lb med bottom" style="left:${pos(c.median)}${tx(c.median)}">판매 중 ${man(c.median)}</div>` : ""}
-        ${hasNew && newIn ? `<div class="mk new" style="left:${pos(n.stats.median)}"></div><div class="lb new ${hasSold && near(n.stats.median, sold.stats.mean) ? "bottom" : "top"}" style="left:${pos(n.stats.median)}${tx(n.stats.median)}">새 제품 ${man(n.stats.median)}</div>` : ""}
+        ${hasNew && newIn ? `<div class="mk new" style="left:${pos(n.stats.median)}"></div><div class="lb new ${!(hasSold && near(n.stats.median, sold.stats.mean)) ? "top" : !(hasList && near(n.stats.median, c.median)) ? "bottom" : "top2"}" style="left:${pos(n.stats.median)}${tx(n.stats.median)}">새 제품 ${man(n.stats.median)}</div>` : ""}
         ${hasNew && !newIn ? (n.stats.median > maxA
           ? `<div class="lb new top" style="left:0;transform:none">◀ 새 제품 ${man(n.stats.median)}</div>`
           : `<div class="lb new top" style="left:100%;transform:translateX(-100%)">새 제품 ${man(n.stats.median)} ▶</div>`) : ""}
