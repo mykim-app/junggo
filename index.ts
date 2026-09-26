@@ -30,7 +30,7 @@ const NOT_FOR_SALE = [
 ];
 
 // 본품이 아닌 액세서리 글에 흔한 단어 (검색어에 들어 있으면 적용하지 않음)
-const ACCESSORY = ["케이스", "필름", "강화유리", "커버", "폴리오", "파우치", "상자", "키보드", "거치대", "스킨", "펜슬팁", "스트랩", "충전기", "케이블", "밴드", "충전독", "보호필름", "액정보호"];
+const ACCESSORY = ["케이스", "필름", "강화유리", "커버", "폴리오", "파우치", "상자", "키보드", "거치대", "스킨", "펜슬팁", "스트랩", "충전기", "케이블", "밴드", "충전독", "보호필름", "액정보호", "빈박스", "공박스", "정품박스", "충전본체", "충전케이스"];
 // 본품과 함께 파는 묶음 표시 (이 표시가 있으면 액세서리 단어가 있어도 유지)
 const BUNDLE = ["+", "&", "포함", "세트"];
 
@@ -44,7 +44,10 @@ function tokenAt(name: string, token: string): boolean {
     const i = name.indexOf(token, from);
     if (i < 0) return false;
     const before = name[i - 1] ?? "", after = name[i + token.length] ?? "";
-    const okEnd = !/\d$/.test(token) || !/\d/.test(after);
+    const after2 = name[i + token.length + 1] ?? "";
+    // 숫자로 끝나는 조각 뒤에 숫자가 붙거나, 영문 한 글자만 붙으면(6s·5c·16e 등 다른 모델) 불일치
+    // 단 용량 표기(16g·1t·40m...)는 허용
+    const okEnd = !/\d$/.test(token) || (!/\d/.test(after) && !(/[a-z]/.test(after) && !/[a-z]/.test(after2) && !/[gtm]/.test(after)));
     const okStart = !/^\d/.test(token) || !/\d/.test(before);
     if (okEnd && okStart) return true;
     from = i + 1;
@@ -117,7 +120,8 @@ function isOtherVariant(title: string, q: string, words: string[]): boolean {
   }
   // "S26+"처럼 모델명 바로 뒤의 +는 플러스 모델
   if (!q.includes("+")) {
-    for (const tk of tokens(q)) if (/\d$/.test(tk) && (norm(title).includes(tk + "+"))) return true;
+    for (const forms of modelTokens(q)) for (const tk of forms)
+      if (/\d$/.test(tk) && norm(title).includes(norm(tk) + "+")) return true;
   }
   return false;
 }
@@ -128,7 +132,19 @@ function tokenForms(t: string): string[] {
   if (t.endsWith("+") && t.length > 1) forms.push(t.slice(0, -1) + "플러스", t.slice(0, -1) + "plus");
   return [...new Set(forms)];
 }
-const matchesAll = (title: string, q: string) => tokens(q).every((t) => tokenForms(t).some((f) => hasToken(title, f)));
+// 숫자만 있는 조각(예: "아이폰 16"의 16)은 앞 조각과 붙여서 하나의 모델명으로 봄
+// → "16GB"·"아이폰6 16g"의 16과 섞이지 않음
+function modelTokens(q: string): string[][] {
+  const out: string[][] = [];
+  for (const t of tokens(q)) {
+    if (/^\d+$/.test(t) && out.length) {
+      const prevForms = out.pop()!;
+      out.push(prevForms.flatMap((p) => [p + t, p + " " + t]));
+    } else out.push(tokenForms(t));
+  }
+  return out;
+}
+const matchesAll = (title: string, q: string) => modelTokens(q).every((forms) => forms.some((f) => hasToken(title, f)));
 
 function filterListings(list: Listing[], q: string, exclude: string[]): Listing[] {
   const variants = variantWords(q);
@@ -170,7 +186,7 @@ function aggregate(source: string, filtered: Listing[], extra: Record<string, un
 
 // ---------- 번개장터 ----------
 async function fetchBunjang(q: string, exclude: string[]) {
-  const url = `https://api.bunjang.co.kr/api/1/find_v2.json?q=${encodeURIComponent(q)}&order=date&page=0&n=100`;
+  const url = `https://api.bunjang.co.kr/api/1/find_v2.json?q=${encodeURIComponent(q)}&order=score&page=0&n=100`; // 시세 계산은 관련도순 100건 (목록 표시는 최근 등록순)
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
   });
