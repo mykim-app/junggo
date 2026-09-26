@@ -1,5 +1,6 @@
 // 중고 시세 조회 함수 (Supabase Edge Function)
 // - 번개장터: 현재 올라온 중고 매물 가격을 모아 광고·구매글·극단값을 빼고 집계
+// - 번개장터 거래완료: 최근 30일(기본) 판매완료 글로 실거래 평균·중간값 집계
 // - 당근마켓: 지정한 동네(기본 인천 연수구 송도동) 주변 매물을 같은 기준으로 집계
 // - 다나와: 새 제품 최저가 참고 (네이버 쇼핑 검색 API는 2026-07-31 종료)
 // 호출: GET /functions/v1/price?q=아이패드 에어5&ex=키보드,펜슬
@@ -139,6 +140,45 @@ async function fetchBunjang(q: string, exclude: string[]) {
   });
 }
 
+// ---------- 번개장터 거래완료 (최근 N일 실거래) ----------
+// f_status=3 은 판매완료 글. 최신순으로 받아 기준일 이전 글이 나오면 멈춤
+// 거래 시점은 글의 마지막 변경 시각(update_time)으로 봄 (판매완료 처리 시점과 대체로 같음)
+async function fetchBunjangSold(q: string, exclude: string[], days: number) {
+  const cutoff = Date.now() - days * 86400000;
+  const rows: any[] = [];
+  for (let page = 0; page < 4; page++) {
+    const url = `https://api.bunjang.co.kr/api/1/find_v2.json?q=${encodeURIComponent(q)}&order=date&page=${page}&n=100&f_status=3`;
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" } });
+    if (!res.ok) throw new Error(`번개장터 거래완료 응답 오류 (${res.status})`);
+    const list: any[] = (await res.json())?.list ?? [];
+    rows.push(...list);
+    const oldest = Math.min(...list.map((x) => Number(x.update_time ?? 0) * 1000));
+    if (list.length < 100 || oldest < cutoff) break;
+  }
+
+  const listings: Listing[] = rows
+    .filter((x) => x?.type === "PRODUCT" && !x.ad && String(x.used) !== "2")
+    .map((x) => ({
+      title: String(x.name ?? ""),
+      price: Number(x.price),
+      reserved: false,
+      location: x.location ?? "",
+      updated: Number(x.update_time ?? 0) * 1000,
+      image: String(x.product_image ?? "").replace("{cnt}", "1").replace("{res}", "300"),
+      link: `https://m.bunjang.co.kr/products/${x.pid}`,
+    }))
+    .filter((x) => x.updated >= cutoff);
+
+  const result = aggregate("번개장터 거래완료", filterListings(listings, q, exclude), {
+    days,
+    from: new Date(cutoff).toISOString(),
+    to: new Date().toISOString(),
+  });
+  // 거래 목록은 최근 거래순으로
+  result.items = [...result.items].sort((a, b) => b.updated - a.updated).slice(0, 10);
+  return result;
+}
+
 // ---------- 당근마켓 ----------
 // 공식 API가 없어 웹 검색 화면에 담긴 자료(__remixContext)를 읽음
 async function fetchDaangnOnce(q: string) {
@@ -266,14 +306,16 @@ Deno.serve(async (req) => {
     });
 
   if (!q) return json({ error: "검색어(q)를 입력하세요" }, 400);
+  const days = Math.min(Math.max(Number(u.searchParams.get("days") ?? 30) || 30, 7), 90);
 
-  const [bj, dg, nv] = await Promise.allSettled([
-    fetchBunjang(q, exclude), fetchDaangn(q, exclude), fetchDanawa(q, exclude),
+  const [bj, dg, nv, sd] = await Promise.allSettled([
+    fetchBunjang(q, exclude), fetchDaangn(q, exclude), fetchDanawa(q, exclude), fetchBunjangSold(q, exclude, days),
   ]);
   const err = (r: PromiseRejectedResult) => ({ error: String(r.reason?.message ?? r.reason) });
   const bunjang = bj.status === "fulfilled" ? bj.value : err(bj);
   const daangn = dg.status === "fulfilled" ? dg.value : err(dg);
   const fresh = nv.status === "fulfilled" ? nv.value : err(nv);
+  const sold: any = sd.status === "fulfilled" ? sd.value : err(sd);
 
   // 두 곳 매물을 합쳐 다시 극단값을 빼고 통합 시세 계산
   const merged = [bunjang, daangn].flatMap((s: any) => s.candidatePrices ?? []);
@@ -284,7 +326,11 @@ Deno.serve(async (req) => {
   if (combined.stats.count && "stats" in fresh && fresh.stats.count && fresh.stats.median) {
     ratio = Math.round((combined.stats.median / fresh.stats.median) * 100);
   }
-  for (const s of [bunjang, daangn] as any[]) delete s.candidatePrices;
+  let soldRatio: number | null = null;
+  if (sold.stats?.count && "stats" in fresh && fresh.stats.median) {
+    soldRatio = Math.round((sold.stats.mean / fresh.stats.median) * 100);
+  }
+  for (const s of [bunjang, daangn, sold] as any[]) delete s.candidatePrices;
 
-  return json({ query: q, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, new: fresh, ratio });
+  return json({ query: q, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, sold, new: fresh, ratio, soldRatio });
 });
