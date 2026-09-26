@@ -82,7 +82,7 @@
   .strip .lb.med{color:var(--tag-ink);font-weight:700}
   .strip .lb.new{color:var(--new);font-weight:700}
 
-  .ends{position:relative;height:18px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .ends{position:relative;height:18px;margin-top:16px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .ends span{position:absolute;transform:translateX(-50%);white-space:nowrap}
   .note{font-size:13px;color:var(--muted);margin:14px 0 0}
 
@@ -246,8 +246,11 @@ function render(d, savedAt){
   const listPrices = sources.flatMap((s) => ok(s.data) ? s.data.prices : []);
   const soldPrices = hasSold ? sold.prices : [];
   const all = [...listPrices, ...soldPrices];
-  const lo = Math.min(...all, hasNew ? n.stats.median : Infinity);
-  const hi = Math.max(...all, hasNew ? n.stats.median : 0);
+  const minA = Math.min(...all), maxA = Math.max(...all);
+  // 새 제품가가 매물 가격대와 너무 멀면(2.5배 넘게 차이) 눈금에 넣지 않고 가장자리에 화살표로 표시
+  const newIn = hasNew && n.stats.median <= maxA * 2.5 && n.stats.median >= minA / 2.5;
+  const lo = Math.min(...all, newIn ? n.stats.median : Infinity);
+  const hi = Math.max(...all, newIn ? n.stats.median : 0);
   const pad = (hi - lo) * 0.08 || hi * 0.05 || 1;
   const a = lo - pad, b = hi + pad;
   // 왼쪽이 높은 가격, 오른쪽이 낮은 가격
@@ -296,18 +299,25 @@ function render(d, savedAt){
     ? `<p class="compare">${n.rep?.discontinued
         ? `새 제품 출시가 <b>${won(n.stats.median)}원</b> (${esc(n.rep.title)}, 단종 추정 제품이라 출시가 기준, 현재 남은 재고 최저가 ${won(n.rep.lowest)}원). `
         : `새 제품 다나와 최저가 <b>${won(n.stats.median)}원</b> (${esc(n.rep?.title ?? "")}). `}${hasSold ? "최근 평균 거래 가격" : "중고 시세"}은 새 제품의 약 <b>${hasSold ? d.soldRatio : d.ratio}%</b> 수준입니다.</p>`
-    : `<p class="compare">새 제품 가격을 가져오지 못했습니다${n?.error ? " (" + esc(n.error) + ")" : ""}.</p>`;
+    : n?.notFound
+      ? `<p class="compare">다나와에서 “${esc(d.query)}”와 모델명이 일치하는 새 제품을 찾지 못했습니다. 정확한 모델명(예: 갤럭시 워치 액티브2)으로 검색하면 새 제품가도 함께 나옵니다.</p>`
+      : `<p class="compare">새 제품 가격을 가져오지 못했습니다${n?.error ? " (" + esc(n.error) + ")" : ""}.</p>`;
 
   html += `
       <div class="strip" role="img" aria-label="가격 분포: 최저 ${won(minV)}원, 최고 ${won(maxV)}원">
-        <div class="band" style="left:${pos(band.p75)};width:calc(${pos(band.p25)} - ${pos(band.p75)})"></div>
+        <div class="band" style="left:${Math.max(0, parseFloat(pos(band.p75)))}%;width:${Math.max(0, Math.min(100, parseFloat(pos(band.p25))) - Math.max(0, parseFloat(pos(band.p75))))}%"></div>
         <div class="axis"></div>
         ${soldDots}${listDots}
         ${hasSold ? `<div class="mk sold" style="left:${pos(sold.stats.mean)}"></div><div class="lb sold top" style="left:${pos(sold.stats.mean)}${tx(sold.stats.mean)}">거래 평균 ${man(sold.stats.mean)}</div>` : ""}
         ${hasList ? `<div class="mk med" style="left:${pos(c.median)}"></div><div class="lb med bottom" style="left:${pos(c.median)}${tx(c.median)}">판매 중 ${man(c.median)}</div>` : ""}
-        ${hasNew ? `<div class="mk new" style="left:${pos(n.stats.median)}"></div><div class="lb new ${hasSold && near(n.stats.median, sold.stats.mean) ? "bottom" : "top"}" style="left:${pos(n.stats.median)}${tx(n.stats.median)}">새 제품 ${man(n.stats.median)}</div>` : ""}
+        ${hasNew && newIn ? `<div class="mk new" style="left:${pos(n.stats.median)}"></div><div class="lb new ${hasSold && near(n.stats.median, sold.stats.mean) ? "bottom" : "top"}" style="left:${pos(n.stats.median)}${tx(n.stats.median)}">새 제품 ${man(n.stats.median)}</div>` : ""}
+        ${hasNew && !newIn ? (n.stats.median > maxA
+          ? `<div class="lb new top" style="left:0;transform:none">◀ 새 제품 ${man(n.stats.median)}</div>`
+          : `<div class="lb new top" style="left:100%;transform:translateX(-100%)">새 제품 ${man(n.stats.median)} ▶</div>`) : ""}
       </div>
-      <div class="ends"><span style="left:${pos(maxV)}${tx(maxV)}">최고 ${won(maxV)}원</span><span style="left:${pos(minV)}${tx(minV)}">최저 ${won(minV)}원</span></div>
+      <div class="ends">${parseFloat(pos(minV)) - parseFloat(pos(maxV)) < 34
+        ? `<span style="left:${((parseFloat(pos(minV)) + parseFloat(pos(maxV))) / 2).toFixed(2)}%${tx((minV + maxV) / 2)}">${won(minV)} ~ ${won(maxV)}원</span>`
+        : `<span style="left:${pos(maxV)}${tx(maxV)}">최고 ${won(maxV)}원</span><span style="left:${pos(minV)}${tx(minV)}">최저 ${won(minV)}원</span>`}</div>
       <p class="note">왼쪽일수록 높은 가격입니다. 위쪽 초록 점은 최근 거래완료, 아래쪽 점은 지금 판매 중인 매물(회색 번개장터, 주황 당근)입니다. 노란 띠는 ${hasSold ? "거래 가격" : "매물 가격"}의 가운데 50% 구간입니다. ${new Date(d.checkedAt).toLocaleString("ko-KR")} 기준</p>
     </section>`;
 

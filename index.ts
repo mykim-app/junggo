@@ -29,11 +29,31 @@ const NOT_FOR_SALE = [
 ];
 
 // 본품이 아닌 액세서리 글에 흔한 단어 (검색어에 들어 있으면 적용하지 않음)
-const ACCESSORY = ["케이스", "필름", "강화유리", "커버", "폴리오", "파우치", "상자", "키보드", "거치대", "스킨", "펜슬팁", "스트랩", "충전기", "케이블"];
+const ACCESSORY = ["케이스", "필름", "강화유리", "커버", "폴리오", "파우치", "상자", "키보드", "거치대", "스킨", "펜슬팁", "스트랩", "충전기", "케이블", "밴드", "충전독", "보호필름", "액정보호"];
 // 본품과 함께 파는 묶음 표시 (이 표시가 있으면 액세서리 단어가 있어도 유지)
 const BUNDLE = ["+", "&", "포함", "세트"];
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
+
+// 검색어 조각이 제목에 들어 있는지 검사. 숫자로 끝나거나 시작하면 앞뒤에 다른 숫자가 붙으면 안 됨
+// 예: "워치2"는 "갤럭시워치2"에는 맞지만 "워치20mm"·"워치8"에는 맞지 않음
+function tokenAt(name: string, token: string): boolean {
+  let from = 0;
+  while (true) {
+    const i = name.indexOf(token, from);
+    if (i < 0) return false;
+    const before = name[i - 1] ?? "", after = name[i + token.length] ?? "";
+    const okEnd = !/\d$/.test(token) || !/\d/.test(after);
+    const okStart = !/^\d/.test(token) || !/\d/.test(before);
+    if (okEnd && okStart) return true;
+    from = i + 1;
+  }
+}
+// 제목을 띄어쓰기 유지형과 붙여쓰기형 두 가지로 검사 ("아이폰15 256GB"의 15, "에어 5세대"의 에어5 모두 인식)
+function hasToken(title: string, token: string): boolean {
+  const spaced = title.toLowerCase().replace(/\s+/g, " ");
+  return tokenAt(spaced, token) || tokenAt(norm(title), token);
+}
 const tokens = (q: string) => q.toLowerCase().split(/\s+/).filter(Boolean);
 
 function quantile(sorted: number[], p: number): number {
@@ -84,7 +104,7 @@ function filterListings(list: Listing[], q: string, exclude: string[]): Listing[
   return list.filter((x) => {
     if (!Number.isFinite(x.price) || x.price < 1000 || x.price > 50_000_000 || isDummyPrice(x.price)) return false;
     const name = norm(x.title);
-    if (!qTokens.every((t) => name.includes(t))) return false; // 검색어가 모두 제목에 있어야 함
+    if (!qTokens.every((t) => hasToken(x.title, t))) return false; // 검색어가 모두 제목에 있어야 함
     if (banned.some((b) => name.includes(b))) return false;
     const acc = ACCESSORY.filter((w) => !qTokens.some((t) => t.includes(w) || w.includes(t)));
     if (acc.some((w) => name.includes(w)) && !BUNDLE.some((m) => name.includes(m))) return false;
@@ -263,6 +283,12 @@ const decode = (s: string) =>
   s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
 
+const EN: [string, string][] = [
+  ["아이패드", "ipad"], ["아이폰", "iphone"], ["맥북", "macbook"], ["에어팟", "airpods"], ["애플워치", "applewatch"],
+  ["아이맥", "imac"], ["에어", "air"], ["프로", "pro"], ["미니", "mini"], ["맥스", "max"], ["울트라", "ultra"], ["플러스", "plus"],
+];
+const toEnglish = (t: string) => EN.reduce((acc, [ko, en]) => acc.split(ko).join(en), t);
+
 async function fetchDanawa(q: string, exclude: string[]) {
   const url = `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
@@ -316,12 +342,49 @@ async function fetchDanawa(q: string, exclude: string[]) {
     });
   }
 
-  // 중고·해외구매·리퍼 제외, 제외어 반영 (다나와는 영문 상품명이 많아 검색어 포함 검사는 하지 않음)
+  // 중고·해외구매·리퍼 제외, 제외어 반영
   const banned = ["중고", "해외구매", "리퍼", "렌탈", ...exclude].map(norm).filter(Boolean);
-  const candidates = raw.filter((x) => x.price > 0 && !banned.some((b) => norm(x.title).includes(b)));
+  // 다나와는 검색어와 다른 신제품을 앞에 보여 주는 경우가 있어(예: 워치2 → 워치8) 검색어가 모두 들어 있는 상품만 사용
+  // 애플 제품처럼 상품명이 영문인 경우를 위해 흔한 한글 표기는 영문으로도 맞춰 봄
+  const qTokens = tokens(q);
+  const acc = ACCESSORY.filter((w) => !qTokens.some((t) => t.includes(w) || w.includes(t)));
+  const matches = (title: string) =>
+    qTokens.every((t) => hasToken(title, t) || hasToken(title, toEnglish(t)));
+  const bundleOk = q.includes("+");
+  const candidates = raw.filter((x) =>
+    x.price > 0 && matches(x.title) &&
+    (bundleOk || !x.title.includes("+")) && // 다른 제품과 묶은 구성(예: 탭S9+버즈2)은 제외
+    !banned.some((b) => norm(x.title).includes(b)) &&
+    !acc.some((w) => norm(x.title).includes(w)));
   if (!candidates.length) {
-    return { source: "다나와", searched: raw.length, stats: summarize([]), rep: null, items: [] };
+    // 새 제품 판매가 없더라도(중고 상품만 남은 경우 등) 출시가가 적혀 있으면 출시가를 새 제품가로 사용
+    const withRelease = raw.find((x) => x.release && matches(x.title) && !norm(x.title).includes("해외구매")
+      && !acc.some((w) => norm(x.title).includes(w)));
+    if (withRelease) {
+      const rep = {
+        ...withRelease,
+        title: withRelease.title.replace(/,?\s*중고$/, ""),
+        price: withRelease.release!,
+        discontinued: true,
+        mall: "출시가, 단종 추정 (다나와에 새 제품 판매 없음)",
+      };
+      return {
+        source: "다나와", searched: raw.length, rep, items: [rep],
+        stats: { ...summarize([rep.price]), median: rep.price, min: rep.price },
+      };
+    }
+    return { source: "다나와", searched: raw.length, stats: summarize([]), rep: null, items: [], notFound: true };
   }
+
+  // 본품보다 훨씬 싼 액세서리가 섞이지 않도록, 후보 가격 중간값의 30% 미만은 제외
+  const midP = quantile(candidates.map((x) => x.price).sort((a, b) => a - b), 0.5);
+  for (let i = candidates.length - 1; i >= 0; i--) if (candidates[i].price < midP * 0.3) candidates.splice(i, 1);
+
+  // 검색어에 없는 파생 모델(프로·플러스·클래식 등)보다 기본 모델을 대표 제품으로 우선
+  const VARIANT = ["프로", "pro", "플러스", "plus", "맥스", "max", "울트라", "ultra", "미니", "mini", "클래식", "라이트", "lite", "fe", "엣지", "edge"];
+  const extra = VARIANT.filter((v) => !qTokens.some((t) => t.includes(v) || toEnglish(t).includes(v)));
+  const variantCount = (title: string) => extra.filter((v) => norm(title).includes(v)).length;
+  candidates.sort((a, b) => variantCount(a.title) - variantCount(b.title)); // 같은 조건이면 다나와 순서 유지
 
   // 다나와 검색 1순위 상품을 대표 제품으로 보고, 가격대가 비슷한(0.5~2배) 상품만 함께 표시
   const rep = candidates[0];
