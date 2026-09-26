@@ -306,6 +306,7 @@ async function fetchDaangnOnce(q: string) {
       "Accept-Language": "ko-KR,ko;q=0.9",
     },
     redirect: "follow",
+    signal: AbortSignal.timeout(20000), // 당근이 느릴 때를 대비해 최대 20초까지 기다림
   });
   if (!res.ok) throw new Error(`당근 응답 오류 (${res.status})`);
   const html = await res.text();
@@ -502,8 +503,15 @@ Deno.serve(async (req) => {
   }
   const days = Math.min(Math.max(Number(u.searchParams.get("days") ?? 30) || 30, 7), 90);
 
+  // 당근은 느릴 때가 있어 전체 조회에서는 7초까지만 기다리고, 늦으면 "pending"으로 돌려준 뒤 화면이 당근만 이어서 조회
+  const dgFull = fetchDaangn(q, exclude);
+  try { (globalThis as any).EdgeRuntime?.waitUntil?.(dgFull.catch(() => {})); } catch { /* 지원하지 않으면 무시 */ }
+  const dgTimed = Promise.race([
+    dgFull,
+    new Promise((r) => setTimeout(() => r({ source: "당근마켓", pending: true, stats: summarize([]), prices: [], items: [] }), 7000)),
+  ]);
   const [bj, dg, nv, sd, jg] = await Promise.allSettled([
-    fetchBunjang(q, exclude), fetchDaangn(q, exclude), fetchDanawa(q, exclude), fetchBunjangSold(q, exclude, days),
+    fetchBunjang(q, exclude), dgTimed, fetchDanawa(q, exclude), fetchBunjangSold(q, exclude, days),
     fetchJoongna(q, exclude),
   ]);
   const err = (r: PromiseRejectedResult) => ({ error: String(r.reason?.message ?? r.reason) });
