@@ -188,7 +188,9 @@ function summarizeJs(prices){
 
 // ---- 당근 이어서 조회 ----
 // 당근은 첫 요청에 비어 있거나 늦게 오는 경우가 있어, 매물이 나올 때까지 간격을 늘려 가며 천천히 다시 조회
-const DG_DELAYS = [2000, 4000, 6000, 8000, 12000, 15000]; // 최대 6회, 약 47초 + 응답 대기
+// 당근은 같은 접속 주소에서 약 20초에 1번 정도만 매물을 내주고, 그보다 자주 물으면 빈 결과를 줌
+// → 짧게 여러 번 묻지 않고 25초 이상 간격으로 천천히 다시 물음 (최대 5회, 약 2분 40초)
+const DG_DELAYS = [25000, 25000, 30000, 35000, 45000];
 let searchSeq = 0; // 새 검색을 시작하면 이전 당근 조회는 멈춤
 
 function dgStatus(html){ const el = $("#dgload"); if (el) el.innerHTML = html; }
@@ -205,7 +207,8 @@ async function retryDaangn(q, ex, key, data, seq){
     const t0 = Date.now(), wait = DG_DELAYS[n];
     const timer = setInterval(() => {
       const r = Math.min(1, (Date.now() - t0) / wait);
-      dgStatus(dgBar(startPct + (endPct - startPct) * r, `당근마켓 매물 확인 중… (${n + 1}/${total}회, 느릴 때는 조금 걸립니다)`));
+      const left = Math.max(0, Math.ceil((wait - (Date.now() - t0)) / 1000));
+      dgStatus(dgBar(startPct + (endPct - startPct) * r, `당근마켓이 바쁠 때라 잠시 기다렸다가 다시 묻습니다… ${left}초 후 ${n + 1}/${total}회째 조회`));
     }, 200);
     await new Promise((r) => setTimeout(r, wait));
     clearInterval(timer);

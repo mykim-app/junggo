@@ -336,10 +336,12 @@ async function fetchDaangnOnce(q: string) {
     const j = await r.json();
     return { region: j.region ?? DAANGN_REGION, articles: Array.isArray(j.articles) ? j.articles : [] };
   }
-  const url = `https://www.daangn.com/kr/buy-sell/?in=${encodeURIComponent(DAANGN_REGION)}&search=${encodeURIComponent(q)}`;
+  // 옛 주소(/kr/buy-sell/?search=)는 새 주소로 넘기는 요청이 한 번 더 생겨, 당근의 요청 횟수 제한을 두 배로 씀 → 최종 주소로 바로 요청
+  const url = `https://www.daangn.com/kr/search/buy-sell/?in=${encodeURIComponent(DAANGN_REGION)}&q=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "ko-KR,ko;q=0.9",
     },
     redirect: "follow",
