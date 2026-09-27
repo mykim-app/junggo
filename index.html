@@ -44,6 +44,11 @@
   .dgload{margin-top:10px}
   .dgload .bar span{background:var(--dg)}
   .dgload small{display:block;margin-top:6px;color:var(--muted);font-size:13px}
+  .region{margin-top:12px;font-size:14px;color:var(--muted)}
+  .region b{color:var(--ink);font-weight:500}
+  .regionPanel{margin-top:8px;padding:12px;background:var(--paper);border:1px solid var(--line);border-radius:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .regionPanel select{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)}
+  .regionPanel small{width:100%;color:var(--muted);font-size:13px}
   .linkbtn{font:inherit;font-size:13px;margin-left:6px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);background:var(--paper);color:var(--ink);cursor:pointer}
   .saved{margin:28px 0 -16px;font-size:14px;color:var(--muted)}
   .saved button{font:inherit;font-size:14px;margin-left:6px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);background:var(--paper);color:var(--ink);cursor:pointer}
@@ -122,6 +127,18 @@
     <button id="go" type="submit">조회</button>
     <input id="ex" type="text" placeholder="제외할 단어 (쉼표로 구분, 예: 프로, 케이스, 펜슬)" aria-label="제외할 단어">
   </form>
+  <div class="region">
+    <span>당근 동네</span> <b id="regionLabel">인천광역시 연수구 송도동</b>
+    <button type="button" id="regionBtn" class="linkbtn">바꾸기</button>
+  </div>
+  <div class="regionPanel" id="regionPanel" hidden>
+    <select id="selArea" aria-label="시도"><option value="">시도 선택</option></select>
+    <select id="selGu" aria-label="시군구" disabled><option value="">시군구 선택</option></select>
+    <select id="selDong" aria-label="동" disabled><option value="">동 선택</option></select>
+    <button type="button" id="regionApply" class="linkbtn" disabled>적용</button>
+    <button type="button" id="regionReset" class="linkbtn">기본(송도동)</button>
+    <small id="regionMsg"></small>
+  </div>
   <div class="recent" id="recent"></div>
 
   <div id="out"></div>
@@ -198,13 +215,13 @@ function dgBar(pct, text){
   return `<div class="bar"><span style="width:${Math.min(100, pct).toFixed(1)}%"></span></div><small>${text}</small>`;
 }
 
-async function retryDaangn(q, ex, key, data, seq){
-  const total = DG_DELAYS.length;
+async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
+  const total = delays.length;
   for (let n = 0; n < total; n++) {
     if (seq !== searchSeq) return;
     // 기다리는 동안 막대를 조금씩 채움
     const startPct = (n / total) * 100, endPct = ((n + 0.6) / total) * 100;
-    const t0 = Date.now(), wait = DG_DELAYS[n];
+    const t0 = Date.now(), wait = delays[n];
     const timer = setInterval(() => {
       const r = Math.min(1, (Date.now() - t0) / wait);
       const left = Math.max(0, Math.ceil((wait - (Date.now() - t0)) / 1000));
@@ -215,7 +232,7 @@ async function retryDaangn(q, ex, key, data, seq){
     if (seq !== searchSeq) return;
     dgStatus(dgBar(endPct, `당근마켓에 묻는 중… (${n + 1}/${total}회)`));
     try {
-      const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&only=daangn&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
+      const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&only=daangn&region=${encodeURIComponent(regionValue())}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
       const j = await res.json();
       if (seq !== searchSeq) return;
       if (j.daangn?.stats?.count) {
@@ -239,11 +256,86 @@ async function retryDaangn(q, ex, key, data, seq){
   render(data);
 }
 
+// ---- 당근 동네 선택 (이 브라우저에 저장) ----
+function loadRegion(){ try { return JSON.parse(localStorage.getItem("dgRegion") || "null"); } catch { return null; } }
+function regionValue(){ return loadRegion()?.value || ""; } // 빈 값이면 함수의 기본 동네(송도동)
+function drawRegion(){ $("#regionLabel").textContent = loadRegion()?.label || "인천광역시 연수구 송도동"; }
+function cacheGet(k, ttl){ try { const v = JSON.parse(localStorage.getItem(k) || "null"); return v && Date.now() - v.t < ttl ? v.data : null; } catch { return null; } }
+function cacheSet(k, data){ try { localStorage.setItem(k, JSON.stringify({ t: Date.now(), data })); } catch {} }
+const WEEK = 7 * 86400000;
+let areas = [];
+
+async function openRegion(){
+  const panel = $("#regionPanel");
+  panel.hidden = !panel.hidden;
+  if (panel.hidden || areas.length) return;
+  $("#regionMsg").textContent = "지역 목록을 불러오는 중…";
+  try {
+    areas = cacheGet("dgAreas", WEEK) || [];
+    if (!areas.length) {
+      const j = await (await fetch(`${FUNCTION_URL}?regions=areas&forceFunctionRegion=ap-northeast-2`)).json();
+      if (!j.areas) throw new Error(j.error || "지역 목록을 가져오지 못했습니다");
+      areas = j.areas; cacheSet("dgAreas", areas);
+    }
+    $("#selArea").innerHTML = `<option value="">시도 선택</option>` + areas.map((a, i) => `<option value="${i}">${esc(a.name)}</option>`).join("");
+    $("#regionMsg").textContent = "당근은 고른 동네를 중심으로 주변 동네 매물까지 함께 보여 줍니다.";
+  } catch (e) { $("#regionMsg").textContent = e.message; }
+}
+$("#regionBtn").addEventListener("click", openRegion);
+$("#selArea").addEventListener("change", () => {
+  const a = areas[$("#selArea").value];
+  $("#selGu").innerHTML = `<option value="">시군구 선택</option>` + (a ? a.children.map((c) => `<option value="${esc(c.name)}-${c.id}">${esc(c.name)}</option>`).join("") : "");
+  $("#selGu").disabled = !a;
+  $("#selDong").innerHTML = `<option value="">동 선택</option>`; $("#selDong").disabled = true; $("#regionApply").disabled = true;
+});
+$("#selGu").addEventListener("change", async () => {
+  const gu = $("#selGu").value;
+  $("#selDong").innerHTML = `<option value="">동 선택</option>`; $("#selDong").disabled = true; $("#regionApply").disabled = true;
+  if (!gu) return;
+  $("#regionMsg").textContent = "동 목록을 불러오는 중…";
+  try {
+    let dongs = cacheGet(`dgDongs:${gu}`, WEEK);
+    if (!dongs) {
+      const j = await (await fetch(`${FUNCTION_URL}?regions=dongs&gu=${encodeURIComponent(gu)}&forceFunctionRegion=ap-northeast-2`)).json();
+      if (!j.dongs) throw new Error(j.error || "동 목록을 가져오지 못했습니다");
+      dongs = j.dongs; cacheSet(`dgDongs:${gu}`, dongs);
+    }
+    $("#selDong").innerHTML = `<option value="">동 선택</option>` + dongs.map((d) => `<option value="${esc(d.name)}-${d.id}">${esc(d.name)}</option>`).join("");
+    $("#selDong").disabled = !dongs.length;
+    $("#regionMsg").textContent = dongs.length ? "동을 고르고 적용을 누르세요." : "동 목록이 없습니다.";
+  } catch (e) { $("#regionMsg").textContent = e.message; }
+});
+$("#selDong").addEventListener("change", () => { $("#regionApply").disabled = !$("#selDong").value; });
+
+function applyRegion(value, label){
+  try { value ? localStorage.setItem("dgRegion", JSON.stringify({ value, label })) : localStorage.removeItem("dgRegion"); } catch {}
+  drawRegion();
+  $("#regionPanel").hidden = true;
+  // 화면에 결과가 있으면 당근만 새 동네로 바로 다시 조회
+  if (current && current.q === $("#q").value.trim()) {
+    const d = current.data;
+    d.daangn = { source: "당근마켓", stats: { count: 0 }, prices: [], items: [] };
+    d.combined = { stats: summarizeJs([...(d.bunjang?.prices || []), ...(d.joongna?.prices || [])]) };
+    d._daangnRetrying = true; d._daangnFailed = false;
+    render(d);
+    const ex = $("#ex").value.trim();
+    retryDaangn(current.q, ex, `${current.q}|${ex}|${regionValue()}`, d, ++searchSeq, [800, ...DG_DELAYS]);
+  }
+}
+$("#regionApply").addEventListener("click", () => {
+  const areaName = areas[$("#selArea").value]?.name || "";
+  const guName = $("#selGu").selectedOptions[0]?.textContent || "";
+  const dong = $("#selDong").value, dongName = $("#selDong").selectedOptions[0]?.textContent || "";
+  applyRegion(dong, `${areaName} ${guName} ${dongName}`.trim());
+});
+$("#regionReset").addEventListener("click", () => applyRegion("", ""));
+let current = null; // 지금 화면에 보이는 결과 {q, data}
+
 async function search(force = false){
   const q = $("#q").value.trim(); if (!q) return;
   const seq = ++searchSeq;
   const ex = $("#ex").value.trim();
-  const key = `${q}|${ex}`;
+  const key = `${q}|${ex}|${regionValue()}`;
   const saved = loadResults()[key];
 
   if (!force && saved && Date.now() - saved.t < RESULT_FRESH_MS) {
@@ -261,7 +353,7 @@ async function search(force = false){
   try {
     if (FUNCTION_URL.includes("YOUR-PROJECT")) throw new Error("index.html의 FUNCTION_URL을 Supabase 함수 주소로 바꿔 주세요.");
     // 당근·번개장터가 국내 접속을 기준으로 응답하므로 서울 지역에서 실행
-    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
+    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&region=${encodeURIComponent(regionValue())}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `조회 실패 (${res.status})`);
 
@@ -300,6 +392,7 @@ function listHtml(items){
 }
 
 function render(d, savedAt){
+  current = { q: $("#q").value.trim(), data: d };
   const sources = [
     { key: "bunjang", name: "번개장터", cls: "bj", data: d.bunjang },
     { key: "daangn", name: "당근마켓", cls: "dg", data: d.daangn },
@@ -429,6 +522,7 @@ function ago(ms){
 }
 
 drawRecent();
+drawRegion();
 const params = new URLSearchParams(location.search);
 if (params.get("q")) { $("#q").value = params.get("q"); search(); }
 </script>

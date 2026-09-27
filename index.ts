@@ -326,18 +326,18 @@ async function fetchBunjangSold(q: string, exclude: string[], days: number) {
 
 // ---------- 당근마켓 ----------
 // 공식 API가 없어 웹 검색 화면에 담긴 자료(__remixContext)를 읽음
-async function fetchDaangnOnce(q: string) {
+async function fetchDaangnOnce(q: string, region: string = DAANGN_REGION) {
   if (DAANGN_PROXY_URL) {
-    const r = await fetch(`${DAANGN_PROXY_URL}/daangn?q=${encodeURIComponent(q)}&region=${encodeURIComponent(DAANGN_REGION)}`, {
+    const r = await fetch(`${DAANGN_PROXY_URL}/daangn?q=${encodeURIComponent(q)}&region=${encodeURIComponent(region)}`, {
       headers: { "X-Proxy-Key": DAANGN_PROXY_KEY },
       signal: AbortSignal.timeout(20000),
     });
     if (!r.ok) throw new Error(`NAS 중계 응답 오류 (${r.status})`);
     const j = await r.json();
-    return { region: j.region ?? DAANGN_REGION, articles: Array.isArray(j.articles) ? j.articles : [] };
+    return { region: j.region ?? region, articles: Array.isArray(j.articles) ? j.articles : [] };
   }
   // 옛 주소(/kr/buy-sell/?search=)는 새 주소로 넘기는 요청이 한 번 더 생겨, 당근의 요청 횟수 제한을 두 배로 씀 → 최종 주소로 바로 요청
-  const url = `https://www.daangn.com/kr/search/buy-sell/?in=${encodeURIComponent(DAANGN_REGION)}&q=${encodeURIComponent(q)}`;
+  const url = `https://www.daangn.com/kr/search/buy-sell/?in=${encodeURIComponent(region)}&q=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -357,7 +357,8 @@ async function fetchDaangnOnce(q: string) {
   const loader = ctx?.state?.loaderData ?? {};
   const route: any = Object.entries(loader).find(([k]) => k.includes("buy-sell"))?.[1] ?? {};
   return {
-    region: route?.searchRegion?.fullName ?? DAANGN_REGION,
+    region: route?.searchRegion?.fullName ?? region,
+    nearby: Array.isArray(route?.nearbyRegions) ? route.nearbyRegions.map((n: any) => ({ name: n.name, id: n.id })) : [],
     articles: Array.isArray(route?.buySellArticles) ? route.buySellArticles : [],
   };
 }
@@ -367,8 +368,41 @@ const daangnCache = new Map<string, { t: number; region: string; articles: any[]
 const DAANGN_FRESH_MS = 30 * 60 * 1000;      // 30분 안의 결과는 당근에 다시 묻지 않음
 const DAANGN_FALLBACK_MS = 24 * 60 * 60 * 1000; // 빈 결과가 오면 24시간 안의 이전 결과로 대신 표시
 
-async function fetchDaangn(q: string, exclude: string[]) {
-  const key = `${DAANGN_REGION}|${q}`;
+// ---- 당근 동네 목록 ----
+// 시도·시군구: 당근 지역 목록 화면 자료 / 동: 그 시군구로 검색했을 때 함께 오는 "주변 동네" 목록
+const regionCache = new Map<string, { t: number; data: unknown }>();
+const REGION_TTL = 24 * 60 * 60 * 1000;
+async function cachedRegion<T>(key: string, load: () => Promise<T>): Promise<T> {
+  const hit = regionCache.get(key);
+  if (hit && Date.now() - hit.t < REGION_TTL) return hit.data as T;
+  const data = await load();
+  regionCache.set(key, { t: Date.now(), data });
+  return data;
+}
+async function daangnAreas() {
+  return cachedRegion("areas", async () => {
+    const r = await fetch("https://www.daangn.com/kr/regions/?_data=routes%2Fkr.regions._index", {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0", "Accept-Language": "ko-KR" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) throw new Error(`당근 지역 목록 오류 (${r.status})`);
+    const j = await r.json();
+    return (j.allRegions ?? []).map((a: any) => ({
+      name: a.regionName,
+      children: (a.childrenRegion ?? []).map((c: any) => ({ name: c.regionName, id: c.regionId })),
+    }));
+  });
+}
+async function daangnDongs(gu: string) {
+  return cachedRegion(`dongs|${gu}`, async () => {
+    const got: any = await fetchDaangnOnce("중고", gu);
+    return (got.nearby ?? []) as { name: string; id: string }[];
+  });
+}
+const REGION_RE = /^[0-9A-Za-z가-힣·.]{1,20}-\d{1,6}$/;
+
+async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN_REGION) {
+  const key = `${region}|${q}`;
   const now = Date.now();
   const hit = daangnCache.get(key);
   let got: { region: string; articles: any[] };
@@ -376,7 +410,7 @@ async function fetchDaangn(q: string, exclude: string[]) {
   if (hit && now - hit.t < DAANGN_FRESH_MS) {
     got = hit; fetchedAt = hit.t;
   } else {
-    got = await fetchDaangnOnce(q);
+    got = await fetchDaangnOnce(q, region);
     if (got.articles.length) {
       daangnCache.set(key, { t: now, ...got });
       for (const [k, v] of daangnCache) if (now - v.t > DAANGN_FALLBACK_MS) daangnCache.delete(k);
@@ -545,15 +579,29 @@ Deno.serve(async (req) => {
       headers: { ...cors, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "public, max-age=600" },
     });
 
+  // 당근 동네 목록 요청
+  const regionsReq = u.searchParams.get("regions");
+  if (regionsReq === "areas") {
+    try { return json({ areas: await daangnAreas() }); } catch (e) { return json({ error: String((e as Error).message) }, 502); }
+  }
+  if (regionsReq === "dongs") {
+    const gu = u.searchParams.get("gu") ?? "";
+    if (!REGION_RE.test(gu)) return json({ error: "시군구 형식이 올바르지 않습니다" }, 400);
+    try { return json({ dongs: await daangnDongs(gu) }); } catch (e) { return json({ error: String((e as Error).message) }, 502); }
+  }
+  // 당근 기준 동네 (화면에서 고른 값, 없으면 기본값)
+  const regionParam = u.searchParams.get("region") ?? "";
+  const region = REGION_RE.test(regionParam) ? regionParam : DAANGN_REGION;
+
   if (!q) return json({ error: "검색어(q)를 입력하세요" }, 400);
   if (u.searchParams.get("only") === "daangn") {
-    try { const dg: any = await fetchDaangn(q, exclude); delete dg.candidatePrices; return json({ query: q, daangn: dg }); }
+    try { const dg: any = await fetchDaangn(q, exclude, region); delete dg.candidatePrices; return json({ query: q, daangn: dg }); }
     catch (e) { return json({ query: q, daangn: { error: String((e as Error)?.message ?? e) } }); }
   }
   const days = Math.min(Math.max(Number(u.searchParams.get("days") ?? 30) || 30, 7), 90);
 
   // 당근은 느릴 때가 있어 전체 조회에서는 7초까지만 기다리고, 늦으면 "pending"으로 돌려준 뒤 화면이 당근만 이어서 조회
-  const dgFull = fetchDaangn(q, exclude);
+  const dgFull = fetchDaangn(q, exclude, region);
   try { (globalThis as any).EdgeRuntime?.waitUntil?.(dgFull.catch(() => {})); } catch { /* 지원하지 않으면 무시 */ }
   const dgTimed = Promise.race([
     dgFull,
