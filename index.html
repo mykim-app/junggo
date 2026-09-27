@@ -354,6 +354,9 @@ function render(d, savedAt){
     const m = Math.max(1, Math.round((Date.now() - savedAt) / 60000));
     html += `<p class="saved">${m}분 전에 조회한 결과입니다. <button type="button" id="refresh">새로 조회</button></p>`;
   }
+  if (d.originalQuery && d.originalQuery.trim() !== d.query) {
+    html += `<p class="saved">“${esc(d.originalQuery)}”을(를) “${esc(d.query)}”(으)로 바꿔 검색했습니다. (오타 교정·띄어쓰기)</p>`;
+  }
   html += `<section class="tag" aria-label="중고 시세">`;
   if (hasSold) {
     html += `

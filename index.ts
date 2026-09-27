@@ -30,11 +30,31 @@ const NOT_FOR_SALE = [
 ];
 
 // 본품이 아닌 액세서리 글에 흔한 단어 (검색어에 들어 있으면 적용하지 않음)
-const ACCESSORY = ["케이스", "필름", "강화유리", "커버", "폴리오", "파우치", "상자", "키보드", "거치대", "스킨", "펜슬팁", "스트랩", "충전기", "케이블", "밴드", "충전독", "보호필름", "액정보호", "빈박스", "공박스", "정품박스", "충전본체", "충전케이스"];
+const ACCESSORY = ["케이스", "필름", "강화유리", "커버", "폴리오", "파우치", "상자", "키보드", "거치대", "스킨", "펜슬팁", "스트랩", "충전기", "케이블", "밴드", "충전독", "보호필름", "액정보호", "빈박스", "공박스", "정품박스", "충전본체", "충전케이스", "키트"];
 // 본품과 함께 파는 묶음 표시 (이 표시가 있으면 액세서리 단어가 있어도 유지)
 const BUNDLE = ["+", "&", "포함", "세트"];
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, "");
+
+// ---- 검색어 다듬기 ----
+// 흔한 오타 교정 (판매 글은 대부분 표준 표기로 올라옴)
+const TYPO: [RegExp, string][] = [
+  [/에어콘/g, "에어컨"], [/악세사리/g, "액세서리"], [/엑세서리/g, "액세서리"],
+];
+// 붙여 쓴 검색어에서 앞의 제조사 이름을 떼어 냄 (예: "삼성창문형에어컨" → "삼성 창문형에어컨")
+const BRANDS = ["삼성전자", "삼성", "엘지", "lg전자", "lg", "애플", "다이슨", "샤오미", "위닉스", "쿠쿠", "쿠첸", "캐리어",
+  "필립스", "소니", "닌텐도", "로지텍", "브라운", "드롱기", "발뮤다", "신일", "파세코", "위니아", "코웨이", "레노버",
+  "에이수스", "보스", "젠하이저", "캐논", "니콘", "후지필름", "고프로", "dji", "브레빌", "네스프레소"];
+function refineQuery(raw: string): string {
+  let q = raw.trim().replace(/\s+/g, " ");
+  for (const [re, to] of TYPO) q = q.replace(re, to);
+  q = q.split(" ").map((t) => {
+    const low = t.toLowerCase();
+    const b = BRANDS.find((b) => low.startsWith(b) && low.length > b.length + 1 && !/^\d/.test(low.slice(b.length)));
+    return b ? `${t.slice(0, b.length)} ${t.slice(b.length)}` : t;
+  }).join(" ");
+  return q;
+}
 
 // 검색어 조각이 제목에 들어 있는지 검사. 숫자로 끝나거나 시작하면 앞뒤에 다른 숫자가 붙으면 안 됨
 // 예: "워치2"는 "갤럭시워치2"에는 맞지만 "워치20mm"·"워치8"에는 맞지 않음
@@ -215,7 +235,7 @@ async function fetchBunjang(q: string, exclude: string[]) {
 }
 
 // ---------- 중고나라 ----------
-// 공식 API가 없어 웹 검색 화면에 담긴 자료(Next.js 전송 자료)를 읽음. 최신 등록순 2쪽(최대 100건)
+// 공식 API가 없어 웹 검색 화면에 담긴 자료(Next.js 전송 자료)를 읽음. 추천순 2쪽(최대 100건)
 function extractJsonArray(text: string, start: number): any[] {
   // start 위치의 '[' 부터 짝이 맞는 ']' 까지 잘라 JSON으로 읽음 (문자열 안의 괄호는 건너뜀)
   let depth = 0, inStr = false, esc = false;
@@ -230,7 +250,8 @@ function extractJsonArray(text: string, start: number): any[] {
 }
 
 async function fetchJoongnaPage(q: string, page: number): Promise<any[]> {
-  const url = `https://web.joongna.com/search/${encodeURIComponent(q)}?sort=RECENT_SORT&page=${page}`;
+  // 최신순은 여러 단어 검색 시 한 단어만 맞는 글까지 섞여 관련도가 크게 떨어져 기본(추천순)으로 받음. 화면 목록은 최근 등록순으로 정렬
+  const url = `https://web.joongna.com/search/${encodeURIComponent(q)}?page=${page}`;
   const res = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
@@ -451,7 +472,13 @@ async function fetchDanawa(q: string, exclude: string[]) {
   // 애플 제품처럼 상품명이 영문인 경우를 위해 흔한 한글 표기는 영문으로도 맞춰 봄
   const qTokens = tokens(q);
   const acc = ACCESSORY.filter((w) => !qTokens.some((t) => t.includes(w) || w.includes(t)));
-  const matches = (title: string) => matchesAll(title, q);
+  // 숫자가 들어간 모델명 조각(예: 워치2, 아이폰16)은 반드시 일치해야 함 → 워치2 검색에 워치8이 나오지 않게
+  // 숫자가 없는 조각(창문형·에어컨 등)은 다나와 상품명에 없는 경우가 많아(예: "윈도우핏") 많이 맞을수록 우선만 함
+  const groups = modelTokens(q);
+  const required = groups.filter((g) => g.some((f) => /\d/.test(f)));
+  const optional = groups.filter((g) => !g.some((f) => /\d/.test(f)));
+  const matches = (title: string) => required.every((g) => g.some((f) => hasToken(title, f)));
+  const optScore = (title: string) => optional.filter((g) => g.some((f) => hasToken(title, f))).length;
   const bundleOk = q.includes("+");
   const candidates = raw.filter((x) =>
     x.price > 0 && matches(x.title) &&
@@ -484,7 +511,10 @@ async function fetchDanawa(q: string, exclude: string[]) {
 
   // 검색어에 없는 파생 모델(프로·플러스·클래식 등)보다 기본 모델을 대표 제품으로 우선
   const vw = variantWords(q);
-  candidates.sort((a, b) => Number(isOtherVariant(a.title, q, vw)) - Number(isOtherVariant(b.title, q, vw))); // 같은 조건이면 다나와 순서 유지
+  // 파생 모델이 아닌 것 → 검색어가 더 많이 맞는 것 순으로 (같으면 다나와 순서 유지)
+  candidates.sort((a, b) =>
+    Number(isOtherVariant(a.title, q, vw)) - Number(isOtherVariant(b.title, q, vw)) ||
+    optScore(b.title) - optScore(a.title));
 
   // 다나와 검색 1순위 상품을 대표 제품으로 보고, 가격대가 비슷한(0.5~2배) 상품만 함께 표시
   const rep = candidates[0];
@@ -503,7 +533,8 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
   const u = new URL(req.url);
-  const q = (u.searchParams.get("q") ?? "").trim().slice(0, 60);
+  const rawQ = (u.searchParams.get("q") ?? "").trim().slice(0, 60);
+  const q = refineQuery(rawQ);
   const exclude = (u.searchParams.get("ex") ?? "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 10);
 
   const json = (body: unknown, status = 200) =>
@@ -552,5 +583,5 @@ Deno.serve(async (req) => {
   }
   for (const s of [bunjang, daangn, joongna, sold] as any[]) delete s.candidatePrices;
 
-  return json({ query: q, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, joongna, sold, new: fresh, ratio, soldRatio });
+  return json({ query: q, originalQuery: rawQ, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, joongna, sold, new: fresh, ratio, soldRatio });
 });
