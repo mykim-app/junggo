@@ -222,27 +222,34 @@ function dgBar(pct, text){
   return `<div class="bar"><span style="width:${Math.min(100, pct).toFixed(1)}%"></span></div><small>${text}</small>`;
 }
 
+let dgTimer = null; // 진행 막대 갱신 타이머 (항상 하나만)
+function stopDgTimer(){ if (dgTimer) { clearInterval(dgTimer); dgTimer = null; } }
+
 async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
+  stopDgTimer(); // 이전 조회의 막대 갱신이 남아 번갈아 표시되지 않게 먼저 멈춤
   const total = delays.length;
+  // 막대는 전체 예정 시간(대기 합계 + 조회마다 약 5초) 대비 경과 시간으로 한 방향으로만 채움
+  const planned = delays.reduce((a, b) => a + b, 0) + total * 5000;
+  const t0 = Date.now();
+  let attempt = 1, pct = 0;
+  const draw = () => {
+    if (seq !== searchSeq) { stopDgTimer(); return; }
+    pct = Math.max(pct, Math.min(95, ((Date.now() - t0) / planned) * 100));
+    dgStatus(dgBar(pct, `당근마켓 매물을 확인하는 중입니다… (${attempt}/${total}회, 당근이 바쁠 때는 최대 약 ${Math.ceil(planned / 60000)}분)`));
+  };
+  draw();
+  dgTimer = setInterval(draw, 500);
+
   for (let n = 0; n < total; n++) {
+    attempt = n + 1;
+    await new Promise((r) => setTimeout(r, delays[n]));
     if (seq !== searchSeq) return;
-    // 기다리는 동안 막대를 조금씩 채움
-    const startPct = (n / total) * 100, endPct = ((n + 0.6) / total) * 100;
-    const t0 = Date.now(), wait = delays[n];
-    const timer = setInterval(() => {
-      const r = Math.min(1, (Date.now() - t0) / wait);
-      const left = Math.max(0, Math.ceil((wait - (Date.now() - t0)) / 1000));
-      dgStatus(dgBar(startPct + (endPct - startPct) * r, `당근마켓이 바쁠 때라 잠시 기다렸다가 다시 묻습니다… ${left}초 후 ${n + 1}/${total}회째 조회`));
-    }, 200);
-    await new Promise((r) => setTimeout(r, wait));
-    clearInterval(timer);
-    if (seq !== searchSeq) return;
-    dgStatus(dgBar(endPct, `당근마켓에 묻는 중… (${n + 1}/${total}회)`));
     try {
       const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&only=daangn&region=${encodeURIComponent(regionValue())}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
       const j = await res.json();
       if (seq !== searchSeq) return;
       if (j.daangn?.stats?.count) {
+        stopDgTimer();
         data._daangnRetrying = false;
         data._daangnFailed = false;
         data.daangn = j.daangn;
@@ -257,6 +264,7 @@ async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
       if (j.daangn && !j.daangn.pending && j.daangn.searched > 0) break;
     } catch {}
   }
+  stopDgTimer();
   if (seq !== searchSeq) return;
   data._daangnRetrying = false;
   data._daangnFailed = true;
@@ -341,6 +349,7 @@ let current = null; // 지금 화면에 보이는 결과 {q, data}
 async function search(force = false){
   const q = $("#q").value.trim(); if (!q) return;
   const seq = ++searchSeq;
+  stopDgTimer();
   const ex = $("#ex").value.trim();
   const key = `${q}|${ex}|${regionValue()}`;
   const saved = loadResults()[key];
