@@ -41,6 +41,13 @@
   .loading p{margin:12px 0 0;color:var(--muted);font-size:14px}
   .loading .bar span{animation:fill 12s cubic-bezier(.1,.7,.3,1) forwards}
   @keyframes fill{from{width:4%}to{width:92%}}
+  .tradein{margin:10px 0 0;padding:12px 14px;border-radius:10px;border:1px solid var(--line);font-size:15px}
+  .tradein p{margin:0}
+  .tradein p+p{margin-top:4px}
+  .tradein b{font-variant-numeric:tabular-nums}
+  .tradein .sub{font-size:13px;color:var(--muted)}
+  .tradein .tm{color:var(--muted)}
+  .tradein a{font-size:13px;color:var(--new);margin-left:4px}
   .dgload{margin-top:10px}
   .dgload .bar span{background:var(--dg)}
   .dgload small{display:block;margin-top:6px;color:var(--muted);font-size:13px}
@@ -120,7 +127,7 @@
 <body>
 <div class="wrap">
   <h1>중고 시세 조회</h1>
-  <p class="lead">제품명을 넣으면 최근 30일 실제 거래 가격(번개장터 거래완료 기준)과 번개장터·당근마켓·중고나라에서 지금 판매 중인 매물 가격, 다나와 새 제품 최저가를 함께 보여 줍니다.</p>
+  <p class="lead">제품명을 넣으면 최근 30일 실제 거래 가격(번개장터 거래완료 기준)과 번개장터·당근마켓·중고나라에서 지금 판매 중인 매물 가격, 다나와 새 제품 최저가, 갤럭시는 삼성 공식 보상판매 가격까지 함께 보여 줍니다.</p>
 
   <form id="f" autocomplete="off">
     <input id="q" type="search" placeholder="예: 아이패드 에어5, 닌텐도 스위치 OLED" required maxlength="60" aria-label="제품명">
@@ -475,6 +482,20 @@ function render(d, savedAt){
     : n?.notFound
       ? `<p class="compare">다나와에서 “${esc(d.query)}”와 모델명이 일치하는 새 제품을 찾지 못했습니다. 정확한 모델명(예: 갤럭시 워치 액티브2)으로 검색하면 새 제품가도 함께 나옵니다.</p>`
       : `<p class="compare">새 제품 가격을 가져오지 못했습니다${n?.error ? " (" + esc(n.error) + ")" : ""}.</p>`;
+
+  // 삼성 공식 보상판매 (갤럭시 검색일 때)
+  const tw = d.tradein;
+  if (tw) {
+    if (tw.error) {
+      html += `<div class="tradein"><b>삼성 공식 보상판매</b> 가격을 가져오지 못했습니다 (${esc(tw.error)})</div>`;
+    } else if (!tw.models?.length) {
+      html += `<div class="tradein"><b>삼성 공식 보상판매</b> 이 모델은 보상판매 대상 목록에 없습니다. <a href="${esc(tw.link)}" target="_blank" rel="noopener">사이트 열기</a></div>`;
+    } else {
+      html += `<div class="tradein"><p><b>삼성 공식 보상판매</b> <span class="sub">Excellent 등급 기준 보상가</span> <a href="${esc(tw.link)}" target="_blank" rel="noopener">사이트 열기</a></p>` +
+        tw.models.map((m) => `<p>${tw.models.length > 1 || m.model !== d.query ? `<span class="tm">${esc(m.model)}</span> ` : ""}${m.variants.map((v) => `${esc(v.memory)} <b>${won(v.excellent)}원</b>`).join(" · ")}</p>`).join("") +
+        `</div>`;
+    }
+  }
 
   html += `
       <div class="strip" role="img" aria-label="가격 분포: 최저 ${won(minV)}원, 최고 ${won(maxV)}원">

@@ -1,6 +1,7 @@
 // 중고 시세 조회 함수 (Supabase Edge Function)
 // - 번개장터: 현재 올라온 중고 매물 가격을 모아 광고·구매글·극단값을 빼고 집계
 // - 번개장터 거래완료: 최근 30일(기본) 판매완료 글로 실거래 평균·중간값 집계
+// - 삼성 보상판매(Likewize): 갤럭시 검색 시 용량별 Excellent 등급 보상가
 // - 중고나라: 최근 등록된 판매 중 매물(최대 100건)을 같은 기준으로 집계
 // - 당근마켓: 지정한 동네(기본 인천 연수구 송도동) 주변 매물을 같은 기준으로 집계
 // - 다나와: 새 제품 최저가 참고 (네이버 쇼핑 검색 API는 2026-07-31 종료)
@@ -285,6 +286,102 @@ async function fetchJoongna(q: string, exclude: string[]) {
       link: `https://web.joongna.com/product/${x.seq}`,
     }));
   return aggregate("중고나라", filterListings(listings, q, exclude), { searched: rows.length });
+}
+
+// ---------- 삼성 공식 보상판매 (Likewize, kr-samsung-tradein.likewize.com) ----------
+// 갤럭시 검색일 때만 조회. 사이트와 같은 방식(공개키 교환 → 손님 로그인 → 암호화 요청)으로 기기 검색·용량별 가격을 받음
+// 용량별 가격(priceByCondition)은 등급별로 높은 가격부터 오며, 가장 높은 가격이 사이트에 "Excellent"로 표시되는 등급
+const LW_API = "https://prod-oasis-apac.likewize.com";
+const LW_ACCOUNT = "f63171db-8cb5-42be-a3a9-2b96d6b78c9c";
+const LW_PROGRAM = "f0966529-ea3d-4a5f-87a6-ea4c666400a3";
+const lwState: { pub: CryptoKey | null; token: string } = { pub: null, token: "" };
+const lwCache = new Map<string, { t: number; data: unknown }>();
+const b64uEnc = (buf: ArrayBuffer) => {
+  let bin = ""; for (const b of new Uint8Array(buf)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+const b64uDec = (s: string) => {
+  s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "=";
+  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+};
+async function lwKey(): Promise<CryptoKey> {
+  if (lwState.pub) return lwState.pub;
+  const r = await fetch(`${LW_API}/api/auth/handshake`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10000) });
+  const pem: string = (await r.json())?.model?.publicKey ?? "";
+  if (!pem) throw new Error("보상판매 공개키를 받지 못했습니다");
+  const der = Uint8Array.from(atob(pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, "").replace(/\s+/g, "")), (c) => c.charCodeAt(0));
+  lwState.pub = await crypto.subtle.importKey("spki", der, { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
+  return lwState.pub;
+}
+async function lwFetch(path: string, method = "GET", body?: unknown, retried = false): Promise<any> {
+  const key = await lwKey();
+  const aes = await crypto.subtle.generateKey({ name: "AES-CBC", length: 256 }, true, ["encrypt", "decrypt"]);
+  const ek = b64uEnc(await crypto.subtle.encrypt({ name: "RSA-OAEP" }, key, await crypto.subtle.exportKey("raw", aes)));
+  const headers: Record<string, string> = {
+    "X-lw-e-k": ek, "X-Tracking-ID": crypto.randomUUID(), Accept: "*/*",
+    "Content-Type": "application/json; charset=utf-8", "Accept-Language": "ko-KR",
+  };
+  if (lwState.token) headers.Authorization = `Bearer ${lwState.token}`;
+  let payload: string | undefined;
+  if (body !== undefined) {
+    const iv = crypto.getRandomValues(new Uint8Array(16));
+    const c = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-CBC", iv }, aes, new TextEncoder().encode(JSON.stringify(body))));
+    const packed = new Uint8Array(16 + c.length); packed.set(iv); packed.set(c, 16);
+    payload = b64uEnc(packed.buffer);
+  }
+  const r = await fetch(`${LW_API}${path}`, { method, headers, body: payload, signal: AbortSignal.timeout(15000) });
+  if ([401, 403, 422].includes(r.status) && !retried) {
+    // 키·로그인 만료 → 새로 받아서 한 번만 다시 시도
+    lwState.pub = null; lwState.token = "";
+    if (!path.includes("/auth/login")) await lwLogin();
+    return lwFetch(path, method, body, true);
+  }
+  const text = (await r.text()).trim();
+  if (!r.ok) throw new Error(`보상판매 응답 오류 (${r.status})`);
+  if (/^[A-Za-z0-9\-_]+$/.test(text)) {
+    const p = b64uDec(text);
+    const plain = await crypto.subtle.decrypt({ name: "AES-CBC", iv: p.slice(0, 16) }, aes, p.slice(16));
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+  return JSON.parse(text);
+}
+async function lwLogin() {
+  const j = await lwFetch("/api/auth/login", "POST", { channelType: "Web", accountId: LW_ACCOUNT }, true);
+  lwState.token = j?.model?.token ?? "";
+  if (!lwState.token) throw new Error("보상판매 로그인 실패");
+}
+
+async function fetchSamsungTradein(q: string) {
+  const hit = lwCache.get(q);
+  if (hit && Date.now() - hit.t < 6 * 3600 * 1000) return hit.data;
+  if (!lwState.token) await lwLogin();
+  // 사이트 검색어는 제조사 이름 없이 넣는 편이 잘 맞음
+  const term = q.replace(/삼성전자|삼성/g, "").trim();
+  const found = await lwFetch(`/api/trade/device/${LW_PROGRAM}/Customer/models/true?search=${encodeURIComponent(term)}`);
+  const results: any[] = found?.model?.results ?? [];
+  const vw = variantWords(q);
+  // 검색어와 모델명이 맞고, 검색어에 없는 파생 모델(울트라·FE 등)이 아닌 기기만 (태블릿 Wi-Fi/5G처럼 여러 개면 최대 2개)
+  const models = results
+    .filter((m) => matchesAll(String(m.deviceModelName ?? ""), term) && !isOtherVariant(String(m.deviceModelName ?? ""), q, vw))
+    .slice(0, 2);
+  const out = [];
+  for (const m of models) {
+    const v = await lwFetch(`/api/trade/device/${LW_PROGRAM}/Customer/model/${m.deviceModelId}/variants`);
+    const byMemory = new Map<string, number>();
+    for (const x of v?.model?.results ?? []) {
+      const mem = String((x.variantDimensions ?? []).find((d: any) => d.key === "Memory")?.value ?? "").trim() || "기본";
+      const prices = (x.priceByCondition ?? []).map((c: any) => Number(c.priceIncludingPromotions ?? c.price) || 0);
+      const excellent = Math.max(0, ...prices); // 가장 높은 등급 = 사이트의 Excellent
+      byMemory.set(mem, Math.max(byMemory.get(mem) ?? 0, excellent));
+    }
+    const variants = [...byMemory].map(([memory, excellent]) => ({ memory, excellent }))
+      .filter((x) => x.excellent > 0)
+      .sort((a, b) => parseInt(a.memory) * (/TB/i.test(a.memory) ? 1024 : 1) - parseInt(b.memory) * (/TB/i.test(b.memory) ? 1024 : 1));
+    if (variants.length) out.push({ model: String(m.deviceModelName).trim(), image: m.image?.smallImageUrl ?? "", variants });
+  }
+  const data = { source: "삼성 보상판매", grade: "Excellent", link: "https://kr-samsung-tradein.likewize.com/", models: out };
+  lwCache.set(q, { t: Date.now(), data });
+  return data;
 }
 
 // ---------- 번개장터 거래완료 (최근 N일 실거래) ----------
@@ -607,9 +704,10 @@ Deno.serve(async (req) => {
     dgFull,
     new Promise((r) => setTimeout(() => r({ source: "당근마켓", pending: true, stats: summarize([]), prices: [], items: [] }), 7000)),
   ]);
-  const [bj, dg, nv, sd, jg] = await Promise.allSettled([
+  const [bj, dg, nv, sd, jg, tw] = await Promise.allSettled([
     fetchBunjang(q, exclude), dgTimed, fetchDanawa(q, exclude), fetchBunjangSold(q, exclude, days),
     fetchJoongna(q, exclude),
+    /갤럭시|galaxy|삼성/i.test(q) ? fetchSamsungTradein(q) : Promise.resolve(null),
   ]);
   const err = (r: PromiseRejectedResult) => ({ error: String(r.reason?.message ?? r.reason) });
   const bunjang = bj.status === "fulfilled" ? bj.value : err(bj);
@@ -617,6 +715,7 @@ Deno.serve(async (req) => {
   const fresh = nv.status === "fulfilled" ? nv.value : err(nv);
   const sold: any = sd.status === "fulfilled" ? sd.value : err(sd);
   const joongna: any = jg.status === "fulfilled" ? jg.value : err(jg);
+  const tradein: any = tw.status === "fulfilled" ? tw.value : err(tw);
 
   // 두 곳 매물을 합쳐 다시 극단값을 빼고 통합 시세 계산
   const merged = [bunjang, daangn, joongna].flatMap((s: any) => s.candidatePrices ?? []);
@@ -633,5 +732,5 @@ Deno.serve(async (req) => {
   }
   for (const s of [bunjang, daangn, joongna, sold] as any[]) delete s.candidatePrices;
 
-  return json({ query: q, originalQuery: rawQ, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, joongna, sold, new: fresh, ratio, soldRatio });
+  return json({ query: q, originalQuery: rawQ, exclude, checkedAt: new Date().toISOString(), combined, bunjang, daangn, joongna, sold, new: fresh, tradein, ratio, soldRatio });
 });
