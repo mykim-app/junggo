@@ -431,7 +431,7 @@ async function fetchDaangnOnce(q: string, region: string = DAANGN_REGION) {
     });
     if (!r.ok) throw new Error(`NAS 중계 응답 오류 (${r.status})`);
     const j = await r.json();
-    return { region: j.region ?? region, articles: Array.isArray(j.articles) ? j.articles : [] };
+    return { region: j.region ?? region, center: j.center ?? null, articles: Array.isArray(j.articles) ? j.articles : [] };
   }
   // 옛 주소(/kr/buy-sell/?search=)는 새 주소로 넘기는 요청이 한 번 더 생겨, 당근의 요청 횟수 제한을 두 배로 씀 → 최종 주소로 바로 요청
   const url = `https://www.daangn.com/kr/search/buy-sell/?in=${encodeURIComponent(region)}&q=${encodeURIComponent(q)}`;
@@ -456,6 +456,7 @@ async function fetchDaangnOnce(q: string, region: string = DAANGN_REGION) {
   return {
     region: route?.searchRegion?.fullName ?? region,
     nearby: Array.isArray(route?.nearbyRegions) ? route.nearbyRegions.map((n: any) => ({ name: n.name, id: n.id })) : [],
+    center: route?.regionCenterCoordinate ?? null, // 고른 동네의 중심 좌표 {lat, lng}
     articles: Array.isArray(route?.buySellArticles) ? route.buySellArticles : [],
   };
 }
@@ -498,11 +499,20 @@ async function daangnDongs(gu: string) {
 }
 const REGION_RE = /^[0-9A-Za-z가-힣·.]{1,20}-\d{1,6}$/;
 
-async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN_REGION) {
+// 두 좌표 사이 거리(km)
+function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371, rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLng = (b.lng - a.lng) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// 당근은 동네 주변 매물이 적으면 전국 매물까지 섞어 보여 주므로, 고른 동네 중심에서 반경(km) 안의 매물만 사용
+async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN_REGION, radiusKm = 10) {
   const key = `${region}|${q}`;
   const now = Date.now();
   const hit = daangnCache.get(key);
-  let got: { region: string; articles: any[] };
+  let got: { region: string; articles: any[]; center?: any };
   let fetchedAt = now;
   if (hit && now - hit.t < DAANGN_FRESH_MS) {
     got = hit; fetchedAt = hit.t;
@@ -515,13 +525,23 @@ async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN
       got = hit; fetchedAt = hit.t;
     }
   }
-  const listings: Listing[] = got.articles
+  const center = got.center && Number.isFinite(Number(got.center.lat)) ? { lat: Number(got.center.lat), lng: Number(got.center.lng) } : null;
+  const withDist = got.articles
     .filter((x) => ["Ongoing", "Reserved"].includes(String(x.status)))
-    .map((x) => ({
+    .map((x) => {
+      const c = x.tradingCoordinates?.[0];
+      const d = center && c ? distanceKm(center, { lat: Number(c.latitude), lng: Number(c.longitude) }) : null;
+      return { x, d };
+    });
+  // 좌표가 없는 글은 거리를 알 수 없어 제외 (기준 좌표를 못 받은 경우에만 전부 사용)
+  const inRange = center ? withDist.filter((w) => w.d !== null && w.d <= radiusKm) : withDist;
+  const outOfRange = withDist.length - inRange.length;
+  const listings: Listing[] = inRange
+    .map(({ x, d }) => ({
       title: String(x.title ?? ""),
       price: Math.round(parseFloat(String(x.price ?? "0"))),
       reserved: String(x.status) === "Reserved",
-      location: x.region?.name ?? "",
+      location: (x.region?.name ?? "") + (d !== null ? ` · ${d < 1 ? d.toFixed(1) : Math.round(d)}km` : ""),
       updated: Date.parse(x.createdAt ?? x.boostedAt ?? "") || 0, // 최초 등록 시각
       image: String(x.thumbnail ?? ""),
       link: `https://www.daangn.com${x.href ?? ""}`,
@@ -529,6 +549,8 @@ async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN
 
   return aggregate("당근마켓", filterListings(listings, q, exclude), {
     searched: got.articles.length,
+    radiusKm,
+    outOfRange, // 반경 밖이라 뺀 매물 수
     region: got.region,
     fetchedAt: new Date(fetchedAt).toISOString(),
   });
@@ -689,16 +711,17 @@ Deno.serve(async (req) => {
   // 당근 기준 동네 (화면에서 고른 값, 없으면 기본값)
   const regionParam = u.searchParams.get("region") ?? "";
   const region = REGION_RE.test(regionParam) ? regionParam : DAANGN_REGION;
+  const radiusKm = Math.min(Math.max(Number(u.searchParams.get("radius") ?? 10) || 10, 1), 50);
 
   if (!q) return json({ error: "검색어(q)를 입력하세요" }, 400);
   if (u.searchParams.get("only") === "daangn") {
-    try { const dg: any = await fetchDaangn(q, exclude, region); delete dg.candidatePrices; return json({ query: q, daangn: dg }); }
+    try { const dg: any = await fetchDaangn(q, exclude, region, radiusKm); delete dg.candidatePrices; return json({ query: q, daangn: dg }); }
     catch (e) { return json({ query: q, daangn: { error: String((e as Error)?.message ?? e) } }); }
   }
   const days = Math.min(Math.max(Number(u.searchParams.get("days") ?? 30) || 30, 7), 90);
 
   // 당근은 느릴 때가 있어 전체 조회에서는 7초까지만 기다리고, 늦으면 "pending"으로 돌려준 뒤 화면이 당근만 이어서 조회
-  const dgFull = fetchDaangn(q, exclude, region);
+  const dgFull = fetchDaangn(q, exclude, region, radiusKm);
   try { (globalThis as any).EdgeRuntime?.waitUntil?.(dgFull.catch(() => {})); } catch { /* 지원하지 않으면 무시 */ }
   const dgTimed = Promise.race([
     dgFull,

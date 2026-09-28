@@ -53,6 +53,7 @@
   .dgload small{display:block;margin-top:6px;color:var(--muted);font-size:13px}
   .region{margin-top:12px;font-size:14px;color:var(--muted)}
   .region b{color:var(--ink);font-weight:500}
+  .region select{font:inherit;font-size:13px;padding:2px 4px;margin-left:4px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink)}
   .regionPanel{margin-top:8px;padding:12px;background:var(--paper);border:1px solid var(--line);border-radius:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
   .regionPanel select{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)}
   .regionPanel small{width:100%;color:var(--muted);font-size:13px}
@@ -136,7 +137,10 @@
   </form>
   <div class="region">
     <span>당근 동네</span> <b id="regionLabel">인천광역시 연수구 송도동</b>
-    <button type="button" id="regionBtn" class="linkbtn">바꾸기</button>
+    <label>반경 <select id="selRadius" aria-label="당근 매물 반경">
+      <option value="3">3km</option><option value="5">5km</option><option value="10" selected>10km</option><option value="20">20km</option><option value="50">50km</option>
+    </select></label>
+    <button type="button" id="regionBtn" class="linkbtn">동네 바꾸기</button>
   </div>
   <div class="regionPanel" id="regionPanel" hidden>
     <select id="selArea" aria-label="시도"><option value="">시도 선택</option></select>
@@ -245,7 +249,7 @@ async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
     await new Promise((r) => setTimeout(r, delays[n]));
     if (seq !== searchSeq) return;
     try {
-      const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&only=daangn&region=${encodeURIComponent(regionValue())}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
+      const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&only=daangn&region=${encodeURIComponent(regionValue())}&radius=${radiusValue()}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
       const j = await res.json();
       if (seq !== searchSeq) return;
       if (j.daangn?.stats?.count) {
@@ -274,6 +278,7 @@ async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
 // ---- 당근 동네 선택 (이 브라우저에 저장) ----
 function loadRegion(){ try { return JSON.parse(localStorage.getItem("dgRegion") || "null"); } catch { return null; } }
 function regionValue(){ return loadRegion()?.value || ""; } // 빈 값이면 함수의 기본 동네(송도동)
+function radiusValue(){ try { return localStorage.getItem("dgRadius") || "10"; } catch { return "10"; } }
 function drawRegion(){ $("#regionLabel").textContent = loadRegion()?.label || "인천광역시 연수구 송도동"; }
 function cacheGet(k, ttl){ try { const v = JSON.parse(localStorage.getItem(k) || "null"); return v && Date.now() - v.t < ttl ? v.data : null; } catch { return null; } }
 function cacheSet(k, data){ try { localStorage.setItem(k, JSON.stringify({ t: Date.now(), data })); } catch {} }
@@ -334,7 +339,7 @@ function applyRegion(value, label){
     d._daangnRetrying = true; d._daangnFailed = false;
     render(d);
     const ex = $("#ex").value.trim();
-    retryDaangn(current.q, ex, `${current.q}|${ex}|${regionValue()}`, d, ++searchSeq, [800, ...DG_DELAYS]);
+    retryDaangn(current.q, ex, `${current.q}|${ex}|${regionValue()}|${radiusValue()}`, d, ++searchSeq, [800, ...DG_DELAYS]);
   }
 }
 $("#regionApply").addEventListener("click", () => {
@@ -344,6 +349,11 @@ $("#regionApply").addEventListener("click", () => {
   applyRegion(dong, `${areaName} ${guName} ${dongName}`.trim());
 });
 $("#regionReset").addEventListener("click", () => applyRegion("", ""));
+$("#selRadius").addEventListener("change", () => {
+  try { localStorage.setItem("dgRadius", $("#selRadius").value); } catch {}
+  const r = loadRegion();
+  applyRegion(r?.value || "", r?.label || "");
+});
 let current = null; // 지금 화면에 보이는 결과 {q, data}
 
 async function search(force = false){
@@ -351,7 +361,7 @@ async function search(force = false){
   const seq = ++searchSeq;
   stopDgTimer();
   const ex = $("#ex").value.trim();
-  const key = `${q}|${ex}|${regionValue()}`;
+  const key = `${q}|${ex}|${regionValue()}|${radiusValue()}`;
   const saved = loadResults()[key];
 
   if (!force && saved && Date.now() - saved.t < RESULT_FRESH_MS) {
@@ -369,7 +379,7 @@ async function search(force = false){
   try {
     if (FUNCTION_URL.includes("YOUR-PROJECT")) throw new Error("index.html의 FUNCTION_URL을 Supabase 함수 주소로 바꿔 주세요.");
     // 당근·번개장터가 국내 접속을 기준으로 응답하므로 서울 지역에서 실행
-    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&region=${encodeURIComponent(regionValue())}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
+    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&region=${encodeURIComponent(regionValue())}&radius=${radiusValue()}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `조회 실패 (${res.status})`);
 
@@ -456,10 +466,11 @@ function render(d, savedAt){
     if (s.data?.error) return `<li><span class="key ${s.cls}"></span>${s.name}: 조회 실패 (${esc(s.data.error)})</li>`;
     if (s.key === "daangn" && d._daangnRetrying) return `<li><span class="key ${s.cls}"></span>${s.name}: 확인 중…</li>`;
     if (s.key === "daangn" && d._daangnFailed && !ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 이번에는 가져오지 못함 <button type="button" class="linkbtn" id="dgAgain">다시 확인</button></li>`;
-    if (!ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 조건에 맞는 매물 없음</li>`;
+    if (!ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: ${s.data?.radiusKm && s.data.outOfRange ? `반경 ${s.data.radiusKm}km 안에 맞는 매물 없음 (멀리 있는 ${s.data.outOfRange}건 제외)` : "조건에 맞는 매물 없음"}</li>`;
     const st = s.data.stats;
     const when = s.data.fetchedAt && Date.now() - Date.parse(s.data.fetchedAt) > 5 * 60000 ? ", " + ago(Date.parse(s.data.fetchedAt)) + " 조회" : "";
-    return `<li><span class="key ${s.cls}"></span>${s.name} <b>${won(st.median)}원</b> (${st.count}건${s.data.region ? ", " + esc(s.data.region) + " 주변" : ""}${when})</li>`;
+    const area = s.data.region ? `, ${esc(s.data.region)}${s.data.radiusKm ? " 반경 " + s.data.radiusKm + "km" : " 주변"}` : "";
+    return `<li><span class="key ${s.cls}"></span>${s.name} <b>${won(st.median)}원</b> (${st.count}건${area}${when})</li>`;
   }).join("");
 
   if (savedAt) {
@@ -531,7 +542,7 @@ function render(d, savedAt){
   }
   for (const s of sources) {
     if (ok(s.data) && s.data.items.length) {
-      html += `<h2>${s.name} 판매 중 매물${s.data.region ? ` <span class="sub">${esc(s.data.region)} 주변</span>` : ""}</h2>` + listHtml(s.data.items);
+      html += `<h2>${s.name} 판매 중 매물${s.data.region ? ` <span class="sub">${esc(s.data.region)}${s.data.radiusKm ? ` 반경 ${s.data.radiusKm}km (멀리 있는 ${s.data.outOfRange || 0}건 제외)` : " 주변"}</span>` : ""}</h2>` + listHtml(s.data.items);
     }
   }
   if (hasNew) html += `<h2>새 제품 가격 <span class="sub">다나와 최저가, 단종 추정 제품은 출시가</span></h2>` + listHtml(n.items);
@@ -553,6 +564,7 @@ function ago(ms){
 
 drawRecent();
 drawRegion();
+$("#selRadius").value = radiusValue();
 const params = new URLSearchParams(location.search);
 if (params.get("q")) { $("#q").value = params.get("q"); search(); }
 </script>
