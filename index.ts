@@ -530,6 +530,9 @@ async function daangnDongs(gu: string) {
 }
 const REGION_RE = /^[0-9A-Za-z가-힣·.]{1,20}-\d{1,6}$/;
 
+// 동네별로 "동 이름 → 거리(km)"를 기억 (좌표 없는 글의 거리 추정용)
+const dongDistMemo = new Map<string, Map<string, number>>();
+
 // 두 좌표 사이 거리(km)
 function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const R = 6371, rad = Math.PI / 180;
@@ -539,7 +542,7 @@ function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: numb
 }
 
 // 당근은 동네 주변 매물이 적으면 전국 매물까지 섞어 보여 주므로, 고른 동네 중심에서 반경(km) 안의 매물만 사용
-async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN_REGION, radiusKm = 10) {
+async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN_REGION, radiusKm = 10, includeInstant = true) {
   const key = `${region}|${q}`;
   const now = Date.now();
   const hit = daangnCache.get(key);
@@ -567,15 +570,46 @@ async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN
       const d = center && c ? distanceKm(center, { lat: Number(c.latitude), lng: Number(c.longitude) }) : null;
       return { x, d };
     });
-  // 좌표가 없는 글은 거리를 알 수 없어 제외 (기준 좌표를 못 받은 경우에만 전부 사용)
-  const inRange = center ? withDist.filter((w) => w.d !== null && w.d <= radiusKm) : withDist;
-  const outOfRange = withDist.length - inRange.length;
+  // 거래 장소 좌표가 없는 글(당근 글의 상당수)은 동 이름으로 거리를 추정:
+  //  ① 고른 동네와 같은 구의 동(당근이 알려 주는 주변 동네 목록)이면 반경 안으로 봄
+  //  ② 같은 결과 안에서 같은 동 이름의 다른 글이 좌표를 갖고 있으면 그 거리로 봄
+  const nearbyNames = new Set<string>([...(got as any).nearby ?? []].map((n: any) => String(n.name)));
+  const regionDong = String(got.region ?? "").split(" ").pop() ?? "";
+  if (regionDong) nearbyNames.add(regionDong);
+  //  ③ 같은 동네 기준으로 예전 조회에서 알게 된 동별 거리도 함께 사용 (함수가 켜져 있는 동안 누적)
+  const memo = dongDistMemo.get(region) ?? new Map<string, number>();
+  const dongDist = new Map<string, number>(memo);
+  for (const w of withDist) {
+    const name = String(w.x.region?.name ?? "");
+    if (name && w.d !== null) {
+      const v = Math.min(dongDist.get(name) ?? Infinity, w.d);
+      dongDist.set(name, v); memo.set(name, v);
+    }
+  }
+  dongDistMemo.set(region, memo);
+  for (const w of withDist) {
+    if (w.d !== null) continue;
+    const name = String(w.x.region?.name ?? "");
+    if (dongDist.has(name)) { w.d = dongDist.get(name)!; (w as any).est = true; }
+    else if (nearbyNames.has(name)) { w.d = 0; (w as any).est = true; (w as any).sameGu = true; }
+  }
+  // "바로구매" 글은 택배로 바로 살 수 있는 매물이라 거리와 관계없이 포함
+  const instant = (w: any) => includeInstant && w.x.isInstantBuyAvailable === true;
+  const inRange = center ? withDist.filter((w) => instant(w) || (w.d !== null && w.d <= radiusKm)) : withDist;
+  const outOfRange = withDist.filter((w) => !instant(w) && w.d !== null && w.d > radiusKm).length; // 반경 밖
+  const unknownDist = center ? withDist.filter((w) => !instant(w) && w.d === null).length : 0; // 위치를 알 수 없어 뺀 글
+  const instantCount = withDist.filter((w) => instant(w) && !(w.d !== null && w.d <= radiusKm)).length; // 반경 밖이지만 바로구매라 넣은 글
+  const distLabel = (w: any) => {
+    const where = w.sameGu ? " · 같은 구" : w.d !== null ? ` · ${w.est ? "약 " : ""}${w.d < 1 ? w.d.toFixed(1) : Math.round(w.d)}km` : "";
+    return where + (w.x.isInstantBuyAvailable === true ? " · 바로구매" : "");
+  };
   const listings: Listing[] = inRange
-    .map(({ x, d }) => ({
+    .map((w: any) => ({ x: w.x, w }))
+    .map(({ x, w }) => ({
       title: String(x.title ?? ""),
       price: Math.round(parseFloat(String(x.price ?? "0"))),
       reserved: String(x.status) === "Reserved",
-      location: (x.region?.name ?? "") + (d !== null ? ` · ${d < 1 ? d.toFixed(1) : Math.round(d)}km` : ""),
+      location: (x.region?.name ?? "") + distLabel(w),
       updated: Date.parse(x.createdAt ?? x.boostedAt ?? "") || 0, // 최초 등록 시각
       image: String(x.thumbnail ?? ""),
       link: `https://www.daangn.com${x.href ?? ""}`,
@@ -585,6 +619,9 @@ async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN
     searched: got.articles.length,
     radiusKm,
     outOfRange, // 반경 밖이라 뺀 매물 수
+    unknownDist, // 거리를 알 수 없어 뺀 매물 수
+    instantCount, // 반경 밖·위치 모름이지만 바로구매라 포함한 매물 수
+    includeInstant,
     partial: !!got.partial, // 통합검색 일부 결과(최대 12건)인지
     region: got.region,
     fetchedAt: new Date(fetchedAt).toISOString(),
@@ -747,6 +784,7 @@ Deno.serve(async (req) => {
   // 당근 기준 동네 (화면에서 고른 값, 없으면 기본값)
   const regionParam = u.searchParams.get("region") ?? "";
   const region = REGION_RE.test(regionParam) ? regionParam : DAANGN_REGION;
+  const includeInstant = u.searchParams.get("instant") !== "0"; // 기본: 바로구매 매물 포함
   const radiusKm = Math.min(Math.max(Number(u.searchParams.get("radius") ?? 10) || 10, 1), 50);
 
   if (!q) return json({ error: "검색어(q)를 입력하세요" }, 400);
@@ -755,7 +793,7 @@ Deno.serve(async (req) => {
   // 출처 하나만 조회 (화면이 출처별로 따로 요청해 먼저 온 결과부터 보여 줌)
   const only = u.searchParams.get("only") ?? "";
   const single: Record<string, () => Promise<unknown>> = {
-    daangn: () => fetchDaangn(q, exclude, region, radiusKm),
+    daangn: () => fetchDaangn(q, exclude, region, radiusKm, includeInstant),
     bunjang: () => fetchBunjang(q, exclude),
     joongna: () => fetchJoongna(q, exclude),
     sold: () => fetchBunjangSold(q, exclude, days),
@@ -773,7 +811,7 @@ Deno.serve(async (req) => {
   }
 
   // 당근은 느릴 때가 있어 전체 조회에서는 7초까지만 기다리고, 늦으면 "pending"으로 돌려준 뒤 화면이 당근만 이어서 조회
-  const dgFull = fetchDaangn(q, exclude, region, radiusKm);
+  const dgFull = fetchDaangn(q, exclude, region, radiusKm, includeInstant);
   try { (globalThis as any).EdgeRuntime?.waitUntil?.(dgFull.catch(() => {})); } catch { /* 지원하지 않으면 무시 */ }
   const dgTimed = Promise.race([
     dgFull,
