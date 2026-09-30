@@ -611,6 +611,7 @@ async function fetchDanawa(q: string, exclude: string[]) {
       "Accept-Language": "ko-KR,ko;q=0.9",
       Referer: "https://www.danawa.com/",
     },
+    signal: AbortSignal.timeout(12000),
   });
   if (!res.ok) throw new Error(`다나와 응답 오류 (${res.status})`);
   const html = await res.text();
@@ -749,11 +750,27 @@ Deno.serve(async (req) => {
   const radiusKm = Math.min(Math.max(Number(u.searchParams.get("radius") ?? 10) || 10, 1), 50);
 
   if (!q) return json({ error: "검색어(q)를 입력하세요" }, 400);
-  if (u.searchParams.get("only") === "daangn") {
-    try { const dg: any = await fetchDaangn(q, exclude, region, radiusKm); delete dg.candidatePrices; return json({ query: q, daangn: dg }); }
-    catch (e) { return json({ query: q, daangn: { error: String((e as Error)?.message ?? e) } }); }
-  }
   const days = Math.min(Math.max(Number(u.searchParams.get("days") ?? 30) || 30, 7), 90);
+
+  // 출처 하나만 조회 (화면이 출처별로 따로 요청해 먼저 온 결과부터 보여 줌)
+  const only = u.searchParams.get("only") ?? "";
+  const single: Record<string, () => Promise<unknown>> = {
+    daangn: () => fetchDaangn(q, exclude, region, radiusKm),
+    bunjang: () => fetchBunjang(q, exclude),
+    joongna: () => fetchJoongna(q, exclude),
+    sold: () => fetchBunjangSold(q, exclude, days),
+    new: () => fetchDanawa(q, exclude),
+    tradein: () => (/갤럭시|galaxy|삼성/i.test(q) ? fetchSamsungTradein(q) : Promise.resolve(null)),
+  };
+  if (single[only]) {
+    try {
+      const r: any = await single[only]();
+      if (r && typeof r === "object") delete r.candidatePrices;
+      return json({ query: q, originalQuery: rawQ, checkedAt: new Date().toISOString(), [only]: r });
+    } catch (e) {
+      return json({ query: q, originalQuery: rawQ, [only]: { error: String((e as Error)?.message ?? e) } });
+    }
+  }
 
   // 당근은 느릴 때가 있어 전체 조회에서는 7초까지만 기다리고, 늦으면 "pending"으로 돌려준 뒤 화면이 당근만 이어서 조회
   const dgFull = fetchDaangn(q, exclude, region, radiusKm);

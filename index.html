@@ -255,10 +255,8 @@ async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
       if (j.daangn?.stats?.count && j.daangn.partial) {
         // 통합검색 일부 결과(최대 12건): 우선 보여 주고 전체 목록은 계속 확인
         if (!data.daangn?.stats?.count || data.daangn.partial) {
-          data.daangn = j.daangn;
-          data.combined = { stats: summarizeJs([...(data.bunjang?.prices || []), ...(data.joongna?.prices || []), ...j.daangn.prices]) };
-          if (data.new?.stats?.median) data.ratio = Math.round(data.combined.stats.median / data.new.stats.median * 100);
-          saveResult(key, data);
+          data.daangn = j.daangn; recompute(data);
+          saveResult(key, cleanForSave(data));
           render(data); draw();
         }
         continue;
@@ -267,10 +265,8 @@ async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
         stopDgTimer();
         data._daangnRetrying = false;
         data._daangnFailed = false;
-        data.daangn = j.daangn;
-        data.combined = { stats: summarizeJs([...(data.bunjang?.prices || []), ...(data.joongna?.prices || []), ...j.daangn.prices]) };
-        if (data.new?.stats?.median) data.ratio = Math.round(data.combined.stats.median / data.new.stats.median * 100);
-        saveResult(key, data);
+        data.daangn = j.daangn; recompute(data);
+        saveResult(key, cleanForSave(data));
         dgStatus(dgBar(100, "당근마켓 매물을 가져왔습니다."));
         setTimeout(() => { if (seq === searchSeq) render(data); }, 400);
         return;
@@ -346,7 +342,7 @@ function applyRegion(value, label){
   if (current && current.q === $("#q").value.trim()) {
     const d = current.data;
     d.daangn = { source: "당근마켓", stats: { count: 0 }, prices: [], items: [] };
-    d.combined = { stats: summarizeJs([...(d.bunjang?.prices || []), ...(d.joongna?.prices || [])]) };
+    recompute(d);
     d._daangnRetrying = true; d._daangnFailed = false;
     render(d);
     const ex = $("#ex").value.trim();
@@ -367,6 +363,17 @@ $("#selRadius").addEventListener("change", () => {
 });
 let current = null; // 지금 화면에 보이는 결과 {q, data}
 
+// 출처별 값으로 판매 중 통합 시세와 새 제품 대비 비율 다시 계산
+function recompute(d){
+  const prices = ["bunjang", "daangn", "joongna"].flatMap((k) => d[k]?.stats?.count ? d[k].prices : []);
+  d.combined = { stats: summarizeJs(prices) };
+  const newP = d.new?.stats?.count ? d.new.stats.median : 0;
+  d.ratio = newP && d.combined.stats.count ? Math.round(d.combined.stats.median / newP * 100) : null;
+  d.soldRatio = newP && d.sold?.stats?.count ? Math.round(d.sold.stats.mean / newP * 100) : null;
+}
+const SOURCE_KEYS = ["bunjang", "daangn", "joongna", "sold", "new", "tradein"];
+const cleanForSave = (d) => { const c = { ...d }; delete c._loading; return c; };
+
 async function search(force = false){
   const q = $("#q").value.trim(); if (!q) return;
   const seq = ++searchSeq;
@@ -381,42 +388,47 @@ async function search(force = false){
     render(saved.data, saved.t);
     return;
   }
+  if (FUNCTION_URL.includes("YOUR-PROJECT")) { $("#out").innerHTML = `<p class="msg err">index.html의 FUNCTION_URL을 Supabase 함수 주소로 바꿔 주세요.</p>`; return; }
 
   $("#go").disabled = true;
-  $("#out").innerHTML = `<div class="loading" role="status">
-      <div class="bar"><span></span></div>
-      <p>번개장터·당근마켓·중고나라·다나와에서 가격을 모으는 중입니다… 보통 5~10초 걸립니다.</p>
-    </div>`;
-  try {
-    if (FUNCTION_URL.includes("YOUR-PROJECT")) throw new Error("index.html의 FUNCTION_URL을 Supabase 함수 주소로 바꿔 주세요.");
-    // 당근·번개장터가 국내 접속을 기준으로 응답하므로 서울 지역에서 실행
-    const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&region=${encodeURIComponent(regionValue())}&radius=${radiusValue()}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `조회 실패 (${res.status})`);
+  saveRecent(q); drawRecent();
+  // 출처마다 따로 요청해서 먼저 온 결과부터 화면에 보여 줌 (가장 느린 곳을 기다리지 않음)
+  const data = { query: q, originalQuery: q, checkedAt: new Date().toISOString(), _loading: new Set(SOURCE_KEYS), _daangnRetrying: false, _daangnFailed: false };
+  render(data);
+  const base = `${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&region=${encodeURIComponent(regionValue())}&radius=${radiusValue()}&forceFunctionRegion=ap-northeast-2`;
 
-    // 당근만 비어 있으면 이전 당근 결과로 대신하고 통합 시세를 다시 계산
-    const dNow = data.daangn, dOld = saved?.data?.daangn;
-    const empty = !dNow?.stats?.count;
-    const oldOk = dOld?.stats?.count && Date.now() - Date.parse(dOld.fetchedAt || saved.t) < DAANGN_KEEP_MS;
-    if (empty && oldOk) {
-      data.daangn = dOld;
-      const merged = [...(data.bunjang?.prices || []), ...(data.joongna?.prices || []), ...dOld.prices];
-      data.combined = { stats: summarizeJs(merged) };
-      if (data.new?.stats?.median) data.ratio = Math.round(data.combined.stats.median / data.new.stats.median * 100);
-    }
-    saveResult(key, data);
-    saveRecent(q); drawRecent();
-    const needRetry = !data.daangn?.stats?.count || !!data.daangn?.partial;
-    data._daangnRetrying = needRetry;
-    data._daangnFailed = false;
+  await Promise.all(SOURCE_KEYS.map(async (src) => {
+    let r;
+    try {
+      const res = await fetch(`${base}&only=${src}`, { cache: "no-store" });
+      const j = await res.json();
+      r = j[src] ?? (j.error ? { error: j.error } : null);
+      if (j.query) { data.query = j.query; data.originalQuery = j.originalQuery || q; }
+    } catch (e) { r = { error: "연결 실패" }; }
     if (seq !== searchSeq) return;
-    render(data);
-    if (needRetry) retryDaangn(q, ex, key, data, seq);
-  } catch (err) {
-    $("#out").innerHTML = `<p class="msg err">${esc(err.message)}</p>`;
-  } finally {
-    $("#go").disabled = false;
-  }
+
+    if (src === "daangn") {
+      // 당근이 비었으면 이 브라우저에 저장된 24시간 안의 이전 결과로 대신
+      const dOld = saved?.data?.daangn;
+      const oldOk = dOld?.stats?.count && Date.now() - Date.parse(dOld.fetchedAt || saved.t) < DAANGN_KEEP_MS;
+      if (!r?.stats?.count && oldOk) r = dOld;
+    }
+    data[src] = r;
+    data._loading.delete(src);
+    recompute(data);
+
+    if (src === "daangn" && (!r?.stats?.count || r?.partial)) {
+      data._daangnRetrying = true;
+      render(data);
+      retryDaangn(q, ex, key, data, seq);
+    } else {
+      render(data);
+    }
+  }));
+
+  if (seq !== searchSeq) return;
+  $("#go").disabled = false;
+  saveResult(key, cleanForSave(data));
 }
 
 function listHtml(items){
@@ -441,6 +453,17 @@ function render(d, savedAt){
   const md = (iso) => { const t = new Date(iso); return `${t.getMonth() + 1}.${t.getDate()}.`; };
   let html = "";
 
+  const loading = d._loading instanceof Set ? d._loading : new Set();
+  const isLoading = (k) => loading.has(k);
+  if (!hasList && !hasSold && loading.size) {
+    const names = { bunjang: "번개장터", daangn: "당근마켓", joongna: "중고나라", sold: "번개장터 거래완료", new: "다나와 새 제품가", tradein: "삼성 보상판매" };
+    const done = SOURCE_KEYS.filter((k) => !loading.has(k)).map((k) => names[k]);
+    const msg = `가격을 모으는 중입니다… 먼저 도착한 결과부터 바로 보여 드립니다.${done.length ? `<br>도착: ${done.join(", ")}` : ""}`;
+    const box = $("#out .loading p");
+    if (box) { box.innerHTML = msg; return; } // 막대가 처음부터 다시 시작하지 않게 문구만 바꿈
+    $("#out").innerHTML = `<div class="loading" role="status"><div class="bar"><span></span></div><p>${msg}</p></div>`;
+    return;
+  }
   if (!hasList && !hasSold) {
     const errs = [...sources, { name: "번개장터 거래완료", data: sold }].filter((s) => s.data?.error).map((s) => `${s.name} 조회 실패: ${esc(s.data.error)}`);
     $("#out").innerHTML = `<p class="msg">${errs.length ? errs.join("<br>") + "<br>" : ""}조건에 맞는 매물이 없습니다. 검색어를 줄이거나 띄어쓰기를 바꿔 보세요.</p>`;
@@ -475,6 +498,7 @@ function render(d, savedAt){
 
   const perSource = sources.map((s) => {
     if (s.data?.error) return `<li><span class="key ${s.cls}"></span>${s.name}: 조회 실패 (${esc(s.data.error)})</li>`;
+    if (isLoading(s.key)) return `<li><span class="key ${s.cls}"></span>${s.name}: 불러오는 중…</li>`;
     if (s.key === "daangn" && d._daangnRetrying && !ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 확인 중…</li>`;
     if (s.key === "daangn" && d._daangnFailed && !ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 이번에는 가져오지 못함 <button type="button" class="linkbtn" id="dgAgain">다시 확인</button></li>`;
     if (!ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: ${s.data?.radiusKm && s.data.outOfRange ? `반경 ${s.data.radiusKm}km 안에 맞는 매물 없음 (멀리 있는 ${s.data.outOfRange}건 제외)` : "조건에 맞는 매물 없음"}</li>`;
@@ -502,7 +526,7 @@ function render(d, savedAt){
     html += `
       <p class="q">“${esc(d.query)}” 판매 중 매물 시세 (중간값)</p>
       <div class="price">${won(c.median)}<small>원</small></div>
-      <p class="range">최근 거래완료 자료를 가져오지 못해 판매 중 매물 기준으로 표시합니다${sold?.error ? " (" + esc(sold.error) + ")" : ""}.</p>`;
+      <p class="range">${isLoading("sold") ? "최근 30일 거래완료 가격을 불러오는 중입니다… 도착하면 평균 거래 가격으로 바뀝니다." : `최근 거래완료 자료를 가져오지 못해 판매 중 매물 기준으로 표시합니다${sold?.error ? " (" + esc(sold.error) + ")" : ""}.`}</p>`;
   }
   if (hasList) {
     html += `<div class="now"><p>지금 판매 중인 매물 중간값 <b>${won(c.median)}원</b> (${c.count}건, 대부분 ${won(c.p25)} ~ ${won(c.p75)}원)</p><ul class="src">${perSource}</ul>${d._daangnRetrying ? `<div id="dgload" class="dgload">${dgBar(0, "당근마켓 매물 확인 준비 중…")}</div>` : ""}</div>`;
@@ -511,13 +535,17 @@ function render(d, savedAt){
     ? `<p class="compare">${n.rep?.discontinued
         ? `새 제품 출시가 <b>${won(n.stats.median)}원</b> (${esc(n.rep.title)}, 단종 추정 제품이라 출시가 기준, 현재 남은 재고 최저가 ${won(n.rep.lowest)}원). `
         : `새 제품 다나와 최저가 <b>${won(n.stats.median)}원</b> (${esc(n.rep?.title ?? "")}). `}${hasSold ? "최근 평균 거래 가격" : "중고 시세"}은 새 제품의 약 <b>${hasSold ? d.soldRatio : d.ratio}%</b> 수준입니다.</p>`
+    : isLoading("new")
+      ? `<p class="compare">다나와 새 제품 가격을 불러오는 중입니다…</p>`
     : n?.notFound
       ? `<p class="compare">다나와에서 “${esc(d.query)}”와 모델명이 일치하는 새 제품을 찾지 못했습니다. 정확한 모델명(예: 갤럭시 워치 액티브2)으로 검색하면 새 제품가도 함께 나옵니다.</p>`
       : `<p class="compare">새 제품 가격을 가져오지 못했습니다${n?.error ? " (" + esc(n.error) + ")" : ""}.</p>`;
 
   // 삼성 공식 보상판매 (갤럭시 검색일 때)
   const tw = d.tradein;
-  if (tw) {
+  if (isLoading("tradein") && /갤럭시|galaxy|삼성/i.test(d.query || "")) {
+    html += `<div class="tradein"><b>삼성 공식 보상판매</b> <span class="sub">가격을 불러오는 중…</span></div>`;
+  } else if (tw) {
     if (tw.error) {
       html += `<div class="tradein"><b>삼성 공식 보상판매</b> 가격을 가져오지 못했습니다 (${esc(tw.error)})</div>`;
     } else if (!tw.models?.length) {
