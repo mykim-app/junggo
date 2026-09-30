@@ -407,13 +407,19 @@ async function search(force = false){
   const base = `${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&region=${encodeURIComponent(regionValue())}&radius=${radiusValue()}&instant=${instantValue()}&forceFunctionRegion=ap-northeast-2`;
 
   await Promise.all(SOURCE_KEYS.map(async (src) => {
+    // 서울에서 실패하면(다나와 403 등 서버 주소가 일시 차단된 경우) 다른 지역 서버로 한 번씩 더 시도. 당근은 따로 이어서 조회
+    const regions = src === "daangn" ? ["ap-northeast-2"] : ["ap-northeast-2", "ap-northeast-1", "us-west-1"];
     let r;
-    try {
-      const res = await fetch(`${base}&only=${src}`, { cache: "no-store" });
-      const j = await res.json();
-      r = j[src] ?? (j.error ? { error: j.error } : null);
-      if (j.query) { data.query = j.query; data.originalQuery = j.originalQuery || q; }
-    } catch (e) { r = { error: "연결 실패" }; }
+    for (const fr of regions) {
+      try {
+        const res = await fetch(`${base.replace("forceFunctionRegion=ap-northeast-2", "forceFunctionRegion=" + fr)}&only=${src}`, { cache: "no-store" });
+        const j = await res.json();
+        r = j[src] ?? (j.error ? { error: j.error } : null);
+        if (j.query) { data.query = j.query; data.originalQuery = j.originalQuery || q; }
+      } catch (e) { r = { error: "연결 실패" }; }
+      if (seq !== searchSeq) return;
+      if (!r?.error) break;
+    }
     if (seq !== searchSeq) return;
 
     if (src === "daangn") {

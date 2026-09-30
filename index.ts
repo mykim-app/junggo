@@ -640,7 +640,22 @@ const EN: [string, string][] = [
 ];
 const toEnglish = (t: string) => EN.reduce((acc, [ko, en]) => acc.split(ko).join(en), t);
 
+// 다나와는 같은 서버 주소에서 요청이 몰리면 잠시 403(접근 거부)을 주므로 결과를 6시간 저장하고, 403이면 한 번 더 시도
+const danawaCache = new Map<string, { t: number; data: any }>();
 async function fetchDanawa(q: string, exclude: string[]) {
+  const ck = `${q}|${exclude.join(",")}`;
+  const hit = danawaCache.get(ck);
+  if (hit && Date.now() - hit.t < 6 * 3600 * 1000) return structuredClone(hit.data);
+  const data = await fetchDanawaOnce(q, exclude).catch(async (e) => {
+    if (!/403|timed out|시간/.test(String(e?.message ?? e))) throw e;
+    await new Promise((r) => setTimeout(r, 1500));
+    return fetchDanawaOnce(q, exclude);
+  });
+  if (data?.rep) danawaCache.set(ck, { t: Date.now(), data: structuredClone(data) });
+  return data;
+}
+
+async function fetchDanawaOnce(q: string, exclude: string[]) {
   const url = `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
     headers: {
