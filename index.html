@@ -252,6 +252,17 @@ async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
       const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&only=daangn&region=${encodeURIComponent(regionValue())}&radius=${radiusValue()}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
       const j = await res.json();
       if (seq !== searchSeq) return;
+      if (j.daangn?.stats?.count && j.daangn.partial) {
+        // 통합검색 일부 결과(최대 12건): 우선 보여 주고 전체 목록은 계속 확인
+        if (!data.daangn?.stats?.count || data.daangn.partial) {
+          data.daangn = j.daangn;
+          data.combined = { stats: summarizeJs([...(data.bunjang?.prices || []), ...(data.joongna?.prices || []), ...j.daangn.prices]) };
+          if (data.new?.stats?.median) data.ratio = Math.round(data.combined.stats.median / data.new.stats.median * 100);
+          saveResult(key, data);
+          render(data); draw();
+        }
+        continue;
+      }
       if (j.daangn?.stats?.count) {
         stopDgTimer();
         data._daangnRetrying = false;
@@ -265,13 +276,13 @@ async function retryDaangn(q, ex, key, data, seq, delays = DG_DELAYS){
         return;
       }
       // 매물이 정말 없다고 판단되는 응답(검색 결과 0건)은 더 묻지 않음
-      if (j.daangn && !j.daangn.pending && j.daangn.searched > 0) break;
+      if (j.daangn && !j.daangn.pending && !j.daangn.partial && j.daangn.searched > 0) break;
     } catch {}
   }
   stopDgTimer();
   if (seq !== searchSeq) return;
   data._daangnRetrying = false;
-  data._daangnFailed = true;
+  data._daangnFailed = !data.daangn?.stats?.count;
   render(data);
 }
 
@@ -395,7 +406,7 @@ async function search(force = false){
     }
     saveResult(key, data);
     saveRecent(q); drawRecent();
-    const needRetry = !data.daangn?.stats?.count;
+    const needRetry = !data.daangn?.stats?.count || !!data.daangn?.partial;
     data._daangnRetrying = needRetry;
     data._daangnFailed = false;
     if (seq !== searchSeq) return;
@@ -464,13 +475,14 @@ function render(d, savedAt){
 
   const perSource = sources.map((s) => {
     if (s.data?.error) return `<li><span class="key ${s.cls}"></span>${s.name}: 조회 실패 (${esc(s.data.error)})</li>`;
-    if (s.key === "daangn" && d._daangnRetrying) return `<li><span class="key ${s.cls}"></span>${s.name}: 확인 중…</li>`;
+    if (s.key === "daangn" && d._daangnRetrying && !ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 확인 중…</li>`;
     if (s.key === "daangn" && d._daangnFailed && !ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: 이번에는 가져오지 못함 <button type="button" class="linkbtn" id="dgAgain">다시 확인</button></li>`;
     if (!ok(s.data)) return `<li><span class="key ${s.cls}"></span>${s.name}: ${s.data?.radiusKm && s.data.outOfRange ? `반경 ${s.data.radiusKm}km 안에 맞는 매물 없음 (멀리 있는 ${s.data.outOfRange}건 제외)` : "조건에 맞는 매물 없음"}</li>`;
     const st = s.data.stats;
     const when = s.data.fetchedAt && Date.now() - Date.parse(s.data.fetchedAt) > 5 * 60000 ? ", " + ago(Date.parse(s.data.fetchedAt)) + " 조회" : "";
     const area = s.data.region ? `, ${esc(s.data.region)}${s.data.radiusKm ? " 반경 " + s.data.radiusKm + "km" : " 주변"}` : "";
-    return `<li><span class="key ${s.cls}"></span>${s.name} <b>${won(st.median)}원</b> (${st.count}건${area}${when})</li>`;
+    const part = s.data.partial ? (d._daangnRetrying ? ", 빠른 검색 결과 · 전체 목록 확인 중" : ", 빠른 검색 결과") : "";
+    return `<li><span class="key ${s.cls}"></span>${s.name} <b>${won(st.median)}원</b> (${st.count}건${area}${part}${when})</li>`;
   }).join("");
 
   if (savedAt) {

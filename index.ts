@@ -423,6 +423,29 @@ async function fetchBunjangSold(q: string, exclude: string[], days: number) {
 
 // ---------- 당근마켓 ----------
 // 공식 API가 없어 웹 검색 화면에 담긴 자료(__remixContext)를 읽음
+// 당근 통합검색(/kr/search/?q=) 화면의 "중고거래" 부분 (최대 12건)
+// 중고거래 전용 검색이 요청 제한에 걸려 빈 결과를 줄 때도 통합검색은 대부분 결과를 주므로, 빠른 대체 결과로 사용
+async function fetchDaangnQuick(q: string, region: string): Promise<any[]> {
+  const url = `https://www.daangn.com/kr/search/?in=${encodeURIComponent(region)}&q=${encodeURIComponent(q)}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "ko-KR,ko;q=0.9",
+    },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) return [];
+  const html = await res.text();
+  const i = html.indexOf("__remixContext = ");
+  if (i < 0) return [];
+  const j = html.indexOf(";</script>", i);
+  const ctx = JSON.parse(html.slice(i + 17, j));
+  const route: any = Object.entries(ctx?.state?.loaderData ?? {}).find(([k]) => k.includes("search"))?.[1] ?? {};
+  const sec = (route.sections ?? []).find((x: any) => x?.type === "buy-sell");
+  return Array.isArray(sec?.results) ? sec.results : [];
+}
+
 async function fetchDaangnOnce(q: string, region: string = DAANGN_REGION) {
   if (DAANGN_PROXY_URL) {
     const r = await fetch(`${DAANGN_PROXY_URL}/daangn?q=${encodeURIComponent(q)}&region=${encodeURIComponent(region)}`, {
@@ -453,11 +476,19 @@ async function fetchDaangnOnce(q: string, region: string = DAANGN_REGION) {
   const ctx = JSON.parse(html.slice(i + marker.length, j));
   const loader = ctx?.state?.loaderData ?? {};
   const route: any = Object.entries(loader).find(([k]) => k.includes("buy-sell"))?.[1] ?? {};
+  let articles: any[] = Array.isArray(route?.buySellArticles) ? route.buySellArticles : [];
+  let partial = false;
+  if (!articles.length && q !== "중고") {
+    // 전용 검색이 비었으면 통합검색의 중고거래 결과(최대 12건)로 우선 대체
+    articles = await fetchDaangnQuick(q, region).catch(() => []);
+    partial = articles.length > 0;
+  }
   return {
     region: route?.searchRegion?.fullName ?? region,
     nearby: Array.isArray(route?.nearbyRegions) ? route.nearbyRegions.map((n: any) => ({ name: n.name, id: n.id })) : [],
     center: route?.regionCenterCoordinate ?? null, // 고른 동네의 중심 좌표 {lat, lng}
-    articles: Array.isArray(route?.buySellArticles) ? route.buySellArticles : [],
+    articles,
+    partial, // true면 통합검색의 일부 결과(최대 12건)
   };
 }
 
@@ -512,13 +543,16 @@ async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN
   const key = `${region}|${q}`;
   const now = Date.now();
   const hit = daangnCache.get(key);
-  let got: { region: string; articles: any[]; center?: any };
+  let got: { region: string; articles: any[]; center?: any; partial?: boolean };
   let fetchedAt = now;
   if (hit && now - hit.t < DAANGN_FRESH_MS) {
     got = hit; fetchedAt = hit.t;
   } else {
     got = await fetchDaangnOnce(q, region);
-    if (got.articles.length) {
+    if ((got as any).partial) {
+      // 일부 결과는 저장하지 않음. 이전에 저장한 전체 결과가 있으면 그쪽을 사용
+      if (hit && now - hit.t < DAANGN_FALLBACK_MS) { got = hit; fetchedAt = hit.t; }
+    } else if (got.articles.length) {
       daangnCache.set(key, { t: now, ...got });
       for (const [k, v] of daangnCache) if (now - v.t > DAANGN_FALLBACK_MS) daangnCache.delete(k);
     } else if (hit && now - hit.t < DAANGN_FALLBACK_MS) {
@@ -551,6 +585,7 @@ async function fetchDaangn(q: string, exclude: string[], region: string = DAANGN
     searched: got.articles.length,
     radiusKm,
     outOfRange, // 반경 밖이라 뺀 매물 수
+    partial: !!got.partial, // 통합검색 일부 결과(최대 12건)인지
     region: got.region,
     fetchedAt: new Date(fetchedAt).toISOString(),
   });
