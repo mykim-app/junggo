@@ -413,10 +413,14 @@ async function search(force = false){
     for (const fr of regions) {
       try {
         const res = await fetch(`${base.replace("forceFunctionRegion=ap-northeast-2", "forceFunctionRegion=" + fr)}&only=${src}`, { cache: "no-store" });
-        const j = await res.json();
-        r = j[src] ?? (j.error ? { error: j.error } : null);
-        if (j.query) { data.query = j.query; data.originalQuery = j.originalQuery || q; }
-      } catch (e) { r = { error: "연결 실패" }; }
+        let j = null;
+        try { j = await res.json(); } catch {}
+        if (!j) { r = { error: `서버 응답 오류 (HTTP ${res.status})${res.status === 401 || res.status === 403 ? " - 함수의 Verify JWT를 꺼 주세요" : res.status === 404 ? " - 함수 'price'가 배포돼 있는지 확인" : res.status >= 500 ? " - Supabase 프로젝트가 일시정지(Paused)인지 확인" : ""}` }; }
+        else {
+          r = j[src] ?? (j.error ? { error: j.error } : null);
+          if (j.query) { data.query = j.query; data.originalQuery = j.originalQuery || q; }
+        }
+      } catch (e) { r = { error: "연결 실패 - Supabase 프로젝트 일시정지(Paused) 또는 ALLOWED_ORIGIN(CORS) 설정 확인" }; }
       if (seq !== searchSeq) return;
       if (!r?.error) break;
     }

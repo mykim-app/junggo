@@ -206,32 +206,59 @@ function aggregate(source: string, filtered: Listing[], extra: Record<string, un
 }
 
 // ---------- 번개장터 ----------
-async function fetchBunjang(q: string, exclude: string[]) {
-  const url = `https://api.bunjang.co.kr/api/1/find_v2.json?q=${encodeURIComponent(q)}&order=score&page=0&n=100`; // 시세 계산은 관련도순 100건 (목록 표시는 최근 등록순)
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`번개장터 응답 오류 (${res.status})`);
-  const data = await res.json();
-  const list: any[] = Array.isArray(data?.list) ? data.list : [];
+// 번개장터가 옛 주소(find_v2.json)를 없애서(2026-10) 웹 화면이 쓰는 새 검색 주소로 바꿈
+// 한 번에 최대 60건, 다음 쪽은 cursor 로 이어서 받음. 판매 상태는 문자열(SELLING/RESERVED/SOLD_OUT)
+async function bunjangSearch(q: string, opt: { sort: "score" | "date"; withSold?: boolean; pages: number; stopBefore?: number }) {
+  const rows: any[] = [];
+  let cursor = "";
+  let total = 0;
+  const t0 = Date.now();
+  for (let page = 0; page < opt.pages; page++) {
+    if (page > 0 && Date.now() - t0 > 22000) break; // 너무 오래 걸리면 지금까지 모은 것으로 계산
+    const p = new URLSearchParams({ q, policyKey: "pw.product.keyword", size: "60", sort: opt.sort });
+    if (opt.withSold) p.set("status", "SOLD_OUT");
+    if (cursor) p.set("cursor", cursor);
+    const res = await fetch(`https://api.bunjang.co.kr/api/search/v8/web/search?${p}`, {
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) throw new Error(`번개장터 응답 오류 (${res.status})`);
+    const sr = (await res.json())?.data?.responses?.mainGrid?.searchResponse;
+    const list: any[] = Array.isArray(sr?.data) ? sr.data.filter((x: any) => x?.type === "PRODUCT" && !x.ad) : [];
+    total = Number(sr?.totalCount ?? total);
+    rows.push(...list);
+    cursor = sr?.nextCursor ?? "";
+    if (!cursor || !sr?.data?.length) break;
+    if (opt.stopBefore && list.length) {
+      const oldest = Math.min(...list.map((x) => Date.parse(x.updatedAt ?? "") || Infinity));
+      if (oldest < opt.stopBefore) break;
+    }
+  }
+  return { rows, total };
+}
 
-  const listings: Listing[] = list
-    .filter((x) => x?.type === "PRODUCT" && !x.ad)
-    .filter((x) => ["0", "1"].includes(String(x.status))) // 0 판매중, 1 예약중
-    .filter((x) => String(x.used) !== "2") // 구매 희망 글
-    .map((x) => ({
-      title: String(x.name ?? ""),
-      price: Number(x.price),
-      reserved: String(x.status) === "1",
-      location: x.location ?? "",
-      updated: Number(x.update_time ?? 0) * 1000,
-      image: String(x.product_image ?? "").replace("{cnt}", "1").replace("{res}", "300"),
-      link: `https://m.bunjang.co.kr/products/${x.pid}`,
-    }));
+function bunjangListing(x: any, reserved: boolean): Listing {
+  return {
+    title: String(x.name ?? ""),
+    price: Number(x.price),
+    reserved,
+    location: "",
+    updated: Date.parse(x.updatedAt ?? "") || 0,
+    image: String(x.productImage ?? "").replace("{cnt}", "1").replace("{res}", "300"),
+    link: `https://m.bunjang.co.kr/products/${x.pid}`,
+  };
+}
+
+async function fetchBunjang(q: string, exclude: string[]) {
+  // 시세 계산은 관련도순 2쪽(약 120건)
+  const { rows, total } = await bunjangSearch(q, { sort: "score", pages: 2 });
+  const listings: Listing[] = rows
+    .filter((x) => ["SELLING", "RESERVED"].includes(String(x.status)))
+    .map((x) => bunjangListing(x, String(x.status) === "RESERVED"));
 
   return aggregate("번개장터", filterListings(listings, q, exclude), {
-    searched: list.length,
-    totalFound: Number(data?.num_found ?? 0),
+    searched: rows.length,
+    totalFound: total,
   });
 }
 
@@ -385,32 +412,15 @@ async function fetchSamsungTradein(q: string) {
 }
 
 // ---------- 번개장터 거래완료 (최근 N일 실거래) ----------
-// f_status=3 은 판매완료 글. 최신순으로 받아 기준일 이전 글이 나오면 멈춤
-// 거래 시점은 글의 마지막 변경 시각(update_time)으로 봄 (판매완료 처리 시점과 대체로 같음)
+// 최신순으로 받아 거래완료(SOLD_OUT)만 고르고, 기준일 이전 글이 나오면 멈춤
+// 거래 시점은 글의 마지막 변경 시각(updatedAt)으로 봄 (판매완료 처리 시점과 대체로 같음)
 async function fetchBunjangSold(q: string, exclude: string[], days: number) {
   const cutoff = Date.now() - days * 86400000;
-  const rows: any[] = [];
-  for (let page = 0; page < 4; page++) {
-    const url = `https://api.bunjang.co.kr/api/1/find_v2.json?q=${encodeURIComponent(q)}&order=date&page=${page}&n=100&f_status=3`;
-    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" } });
-    if (!res.ok) throw new Error(`번개장터 거래완료 응답 오류 (${res.status})`);
-    const list: any[] = (await res.json())?.list ?? [];
-    rows.push(...list);
-    const oldest = Math.min(...list.map((x) => Number(x.update_time ?? 0) * 1000));
-    if (list.length < 100 || oldest < cutoff) break;
-  }
-
+  // 판매중+거래완료가 섞여 최신순으로 오므로, 기준일 이전 글이 나올 때까지 넘기며 거래완료만 고름
+  const { rows } = await bunjangSearch(q, { sort: "date", withSold: true, pages: 15, stopBefore: cutoff });
   const listings: Listing[] = rows
-    .filter((x) => x?.type === "PRODUCT" && !x.ad && String(x.used) !== "2")
-    .map((x) => ({
-      title: String(x.name ?? ""),
-      price: Number(x.price),
-      reserved: false,
-      location: x.location ?? "",
-      updated: Number(x.update_time ?? 0) * 1000,
-      image: String(x.product_image ?? "").replace("{cnt}", "1").replace("{res}", "300"),
-      link: `https://m.bunjang.co.kr/products/${x.pid}`,
-    }))
+    .filter((x) => String(x.status) === "SOLD_OUT")
+    .map((x) => bunjangListing(x, false))
     .filter((x) => x.updated >= cutoff);
 
   const result = aggregate("번개장터 거래완료", filterListings(listings, q, exclude), {
