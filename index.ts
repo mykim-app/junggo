@@ -165,7 +165,16 @@ function modelTokens(q: string): string[][] {
   }
   return out;
 }
-const matchesAll = (title: string, q: string) => modelTokens(q).every((forms) => forms.some((f) => hasToken(title, f)));
+// 검색어 조각이 다른 조각 안에 들어 있으면(예: "보이스"는 "보이스캐디" 안에도 있음)
+// 긴 조각 부분을 뺀 나머지 제목에서 찾아야 함 → 브랜드명만으로 모델명(보이스)이 맞은 것으로 처리되지 않게
+function groupHit(title: string, forms: string[], q: string): boolean {
+  const longer = tokens(q).filter((u) => forms.every((f) => u !== f && u.includes(f)));
+  if (!longer.length) return forms.some((f) => hasToken(title, f));
+  let masked = title.toLowerCase();
+  for (const u of longer) masked = masked.split(u).join(" ").split(norm(u)).join(" ");
+  return forms.some((f) => hasToken(masked, f));
+}
+const matchesAll = (title: string, q: string) => modelTokens(q).every((forms) => groupHit(title, forms, q));
 
 function filterListings(list: Listing[], q: string, exclude: string[]): Listing[] {
   const variants = variantWords(q);
@@ -730,8 +739,8 @@ async function fetchDanawaOnce(q: string, exclude: string[]) {
   const groups = modelTokens(q);
   const required = groups.filter((g) => g.some((f) => /\d/.test(f)));
   const optional = groups.filter((g) => !g.some((f) => /\d/.test(f)));
-  const matches = (title: string) => required.every((g) => g.some((f) => hasToken(title, f)));
-  const optScore = (title: string) => optional.filter((g) => g.some((f) => hasToken(title, f))).length;
+  const matches = (title: string) => required.every((g) => groupHit(title, g, q));
+  const optScore = (title: string) => optional.filter((g) => groupHit(title, g, q)).length;
   const bundleOk = q.includes("+");
   const candidates = raw.filter((x) =>
     x.price > 0 && matches(x.title) &&
@@ -771,7 +780,9 @@ async function fetchDanawaOnce(q: string, exclude: string[]) {
 
   // 다나와 검색 1순위 상품을 대표 제품으로 보고, 가격대가 비슷한(0.5~2배) 상품만 함께 표시
   const rep = candidates[0];
-  const similar = candidates.filter((x) => x.price >= rep.price * 0.5 && x.price <= rep.price * 2).slice(0, 5);
+  // 검색어가 가장 많이 맞는 상품만 함께 표시 (숫자 없는 검색어에서 다른 모델이 딸려 오지 않게)
+  const repScore = optScore(rep.title);
+  const similar = candidates.filter((x) => optScore(x.title) >= repScore && x.price >= rep.price * 0.5 && x.price <= rep.price * 2).slice(0, 5);
   return {
     source: "다나와",
     searched: raw.length,
@@ -780,6 +791,25 @@ async function fetchDanawaOnce(q: string, exclude: string[]) {
     items: similar,
   };
 }
+
+// ---------- 짧은 주소 (공유 링크용) ----------
+// ?short=<q=...&ex=...> → 같은 내용이면 항상 같은 7자 코드를 돌려주고 저장, ?resolve=<코드> → 저장된 내용을 돌려줌
+// Supabase 표 short_links(code, params) 가 필요함 (README의 SQL 한 번 실행)
+const SB_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const SHORT_KEYS: Record<string, number> = { q: 60, ex: 100, rg: 40, rl: 60, km: 2, in: 1 };
+function cleanShortParams(raw: string): string | null {
+  const src = new URLSearchParams(raw), out = new URLSearchParams();
+  for (const [k, max] of Object.entries(SHORT_KEYS)) { const v = src.get(k); if (v) out.set(k, v.slice(0, max)); }
+  return out.get("q") ? out.toString() : null;
+}
+async function shortCode(params: string): Promise<string> {
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(params)));
+  let n = 0n;
+  for (const b of h.slice(0, 8)) n = (n << 8n) | BigInt(b);
+  return n.toString(36).slice(0, 7).padStart(7, "0");
+}
+const sbHeaders = () => ({ apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" });
 
 Deno.serve(async (req) => {
   const cors = corsFor(req.headers.get("Origin"));
@@ -795,6 +825,37 @@ Deno.serve(async (req) => {
       status,
       headers: { ...cors, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "public, max-age=600" },
     });
+
+  // 짧은 주소 만들기 / 풀기
+  const shortReq = u.searchParams.get("short"), resolveReq = u.searchParams.get("resolve");
+  if (shortReq !== null || resolveReq !== null) {
+    const out = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+    if (!SB_URL || !SB_KEY) return out({ error: "저장소 설정이 없습니다" }, 500);
+    try {
+      if (shortReq !== null) {
+        const params = cleanShortParams(shortReq);
+        if (!params) return out({ error: "검색어가 없습니다" }, 400);
+        const code = await shortCode(params);
+        const r = await fetch(`${SB_URL}/rest/v1/short_links`, {
+          method: "POST",
+          headers: { ...sbHeaders(), Prefer: "resolution=ignore-duplicates,return=minimal" },
+          body: JSON.stringify({ code, params }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) return out({ error: `저장 실패 (${r.status}) - short_links 표를 만들었는지 확인` }, 500);
+        return out({ code });
+      }
+      const code = (resolveReq ?? "").trim();
+      if (!/^[0-9a-z]{7}$/.test(code)) return out({ error: "잘못된 코드" }, 400);
+      const r = await fetch(`${SB_URL}/rest/v1/short_links?code=eq.${code}&select=params&limit=1`, { headers: sbHeaders(), signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return out({ error: `조회 실패 (${r.status})` }, 500);
+      const rows = await r.json();
+      return rows?.[0]?.params ? out({ params: rows[0].params }) : out({ error: "없는 코드" }, 404);
+    } catch (e) {
+      return out({ error: String((e as Error)?.message ?? e) }, 500);
+    }
+  }
 
   // 당근 동네 목록 요청
   const regionsReq = u.searchParams.get("regions");

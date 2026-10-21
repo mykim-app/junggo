@@ -645,12 +645,22 @@ function shareUrl(){
   return u.toString();
 }
 async function shareResult(){
-  const url = shareUrl(), msg = $("#shareMsg");
+  const msg = $("#shareMsg");
   const say = (t) => { if (msg) { msg.textContent = t; setTimeout(() => { if (msg.textContent === t) msg.textContent = ""; }, 4000); } };
+  const longUrl = shareUrl();
+  let url = longUrl, short = false;
+  say("짧은 주소를 만드는 중…");
+  try {
+    const qs = new URL(longUrl).search.slice(1);
+    const r = await fetch(`${FUNCTION_URL}?short=${encodeURIComponent(qs)}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+    const j = await r.json();
+    if (j.code) { url = new URL(longUrl).origin + new URL(longUrl).pathname + "?c=" + j.code; short = true; }
+  } catch {}
+  if (msg) msg.textContent = "";
   if (navigator.share && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)) {
     try { await navigator.share({ title: `${$("#q").value.trim()} 중고 시세`, url }); return; } catch (e) { if (e?.name === "AbortError") return; }
   }
-  try { await navigator.clipboard.writeText(url); say("링크를 복사했습니다. 붙여넣어 보내세요."); }
+  try { await navigator.clipboard.writeText(url); say(short ? "짧은 주소를 복사했습니다. 붙여넣어 보내세요." : "링크를 복사했습니다. (짧은 주소를 만들지 못해 긴 주소로 복사)"); }
   catch { window.prompt("아래 링크를 복사해서 보내세요.", url); }
 }
 
@@ -661,7 +671,17 @@ function ago(ms){
   const d = Math.floor(h / 24); return d < 30 ? `${d}일 전` : `${Math.floor(d / 30)}개월 전`;
 }
 
-const params = new URLSearchParams(location.search);
+let params = new URLSearchParams(location.search);
+// 짧은 주소(?c=코드)로 열면 저장된 검색 조건을 불러옴
+(async () => {
+const sc = params.get("c");
+if (sc && /^[0-9a-z]{7}$/.test(sc)) {
+  try {
+    const r = await fetch(`${FUNCTION_URL}?resolve=${sc}&forceFunctionRegion=ap-northeast-2`, { cache: "no-store" });
+    const j = await r.json();
+    if (j.params) params = new URLSearchParams(j.params);
+  } catch {}
+}
 // 공유 링크로 열었으면 링크에 담긴 설정을 이 브라우저 설정에 반영 (값이 올바른 것만)
 try {
   const rg = params.get("rg");
@@ -675,7 +695,7 @@ drawRegion();
 $("#selRadius").value = radiusValue();
 $("#chkInstant").checked = instantValue() === "1";
 if (params.get("q")) { $("#q").value = params.get("q").slice(0, 60); search(); }
-
+})();
 </script>
 </body>
 </html>

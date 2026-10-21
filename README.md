@@ -80,6 +80,24 @@ JSON 글자가 나오면 정상입니다. 확인할 곳은 다음과 같습니�
 4. 1~2분 뒤 `https://mykim-app.github.io/junggo/` 접속
 5. `https://mykim-app.github.io/junggo/?q=제품명` 형태로 바로 조회 링크도 쓸 수 있음
 
+## 5-1. 짧은 주소 (결과 링크 보내기) — 한 번만 설정
+
+결과 화면의 "결과 링크 보내기"는 `https://mykim-app.github.io/junggo/?c=186w57z` 처럼 짧은 주소를 만듭니다.
+짧은 주소를 저장할 표가 필요하므로, Supabase 대시보드 → **SQL Editor** 에서 아래를 한 번 실행하세요.
+
+```sql
+create table if not exists public.short_links (
+  code text primary key,
+  params text not null,
+  created_at timestamptz not null default now()
+);
+alter table public.short_links enable row level security;
+```
+
+- 표를 만들지 않아도 링크 보내기는 동작합니다. 이 경우 긴 주소(`?q=...&ex=...`)로 복사됩니다.
+- 함수 코드(`index.ts`)를 다시 Deploy 해야 짧은 주소 기능이 켜집니다. 별도 Secret 설정은 필요 없습니다(`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`는 Supabase가 자동으로 넣어 줍니다).
+- 표에는 검색어·제외어·당근 동네·반경만 저장되고 가격은 저장되지 않습니다. 같은 조건이면 같은 코드가 나옵니다.
+
 ## 계산 방식
 
 **평균 거래 가격 (대표 값)**
