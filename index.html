@@ -61,6 +61,10 @@
   .regionPanel small{width:100%;color:var(--muted);font-size:13px}
   .linkbtn{font:inherit;font-size:13px;margin-left:6px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);background:var(--paper);color:var(--ink);cursor:pointer}
   .saved{margin:28px 0 -16px;font-size:14px;color:var(--muted)}
+  .share{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:28px 0 -16px}
+  .share button,.share a{font:inherit;font-size:14px;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid var(--line);background:var(--paper);color:var(--ink);cursor:pointer;text-decoration:none}
+  .share button:hover,.share a:hover{border-color:var(--ink)}
+  .share .done{font-size:13px;color:var(--muted)}
   .saved button{font:inherit;font-size:14px;margin-left:6px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);background:var(--paper);color:var(--ink);cursor:pointer}
   .msg.err{color:var(--warn)}
 
@@ -477,7 +481,10 @@ function render(d, savedAt){
   ];
   const ok = (x) => x && x.stats && x.stats.count > 0;
   const c = d.combined?.stats, n = d.new, sold = d.sold;
-  const hasList = c && c.count > 0, hasSold = ok(sold), hasNew = ok(n);
+  const hasList = c && c.count > 0, hasNew = ok(n);
+  // 거래완료가 3건 미만이면 평균이 한두 건에 좌우되므로 큰 글씨 평균으로 쓰지 않음 (판매 중 매물이 있을 때)
+  const fewSold = ok(sold) && sold.stats.count < 3 && hasList;
+  const hasSold = ok(sold) && !fewSold;
   const md = (iso) => { const t = new Date(iso); return `${t.getMonth() + 1}.${t.getDate()}.`; };
   let html = "";
 
@@ -541,6 +548,7 @@ function render(d, savedAt){
     const m = Math.max(1, Math.round((Date.now() - savedAt) / 60000));
     html += `<p class="saved">${m}분 전에 조회한 결과입니다. <button type="button" id="refresh">새로 조회</button></p>`;
   }
+  html += `<div class="share"><button type="button" id="shareBtn">결과 링크 보내기</button><a href="${esc(danawaUrl(d.query))}" target="_blank" rel="noopener">다나와에서 새 제품 가격 보기 ↗</a><span class="done" id="shareMsg" role="status"></span></div>`;
   if (d.originalQuery && d.originalQuery.trim() !== d.query) {
     html += `<p class="saved">“${esc(d.originalQuery)}”을(를) “${esc(d.query)}”(으)로 바꿔 검색했습니다. (오타 교정·띄어쓰기)</p>`;
   }
@@ -554,7 +562,7 @@ function render(d, savedAt){
     html += `
       <p class="q">“${esc(d.query)}” 판매 중 매물 시세 (중간값)</p>
       <div class="price">${won(c.median)}<small>원</small></div>
-      <p class="range">${isLoading("sold") ? "최근 30일 거래완료 가격을 불러오는 중입니다… 도착하면 평균 거래 가격으로 바뀝니다." : `최근 거래완료 자료를 가져오지 못해 판매 중 매물 기준으로 표시합니다${sold?.error ? " (" + esc(sold.error) + ")" : ""}.`}</p>`;
+      <p class="range">${isLoading("sold") ? "최근 30일 거래완료 가격을 불러오는 중입니다… 도착하면 평균 거래 가격으로 바뀝니다." : fewSold ? `최근 ${sold.days}일 거래완료가 ${sold.stats.count}건뿐이라(평균 거래 가격 기준 3건 이상 필요) 판매 중 매물 기준으로 표시합니다. 참고: 거래완료 ${(sold.prices || []).map((p) => won(p) + "원").join(", ")}` : `최근 거래완료 자료를 가져오지 못해 판매 중 매물 기준으로 표시합니다${sold?.error ? " (" + esc(sold.error) + ")" : ""}.`}</p>`;
   }
   if (hasList) {
     html += `<div class="now"><p>지금 판매 중인 매물 중간값 <b>${won(c.median)}원</b> (${c.count}건, 대부분 ${won(c.p25)} ~ ${won(c.p75)}원)</p><ul class="src">${perSource}</ul>${d._daangnRetrying ? `<div id="dgload" class="dgload">${dgBar(0, "당근마켓 매물 확인 준비 중…")}</div>` : ""}</div>`;
@@ -616,11 +624,34 @@ function render(d, savedAt){
   if (hasNew) html += `<h2>새 제품 가격 <span class="sub">다나와 최저가, 단종 추정 제품은 출시가</span></h2>` + listHtml(n.items);
   $("#out").innerHTML = html;
   $("#refresh")?.addEventListener("click", () => search(true));
+  $("#shareBtn")?.addEventListener("click", shareResult);
   $("#dgAgain")?.addEventListener("click", () => {
     const q = $("#q").value.trim(), ex = $("#ex").value.trim();
     d._daangnRetrying = true; d._daangnFailed = false; render(d);
     retryDaangn(q, ex, `${q}|${ex}`, d, ++searchSeq);
   });
+}
+
+// ---- 결과 링크 보내기 / 다나와 링크 ----
+const danawaUrl = (q) => "https://search.danawa.com/dsearch.php?query=" + encodeURIComponent(q);
+// 받는 사람이 열면 같은 검색어·제외어·당근 동네·반경 설정으로 바로 조회됨 (가격은 열 때 새로 조회)
+function shareUrl(){
+  const u = new URL(location.href); u.search = ""; u.hash = "";
+  const p = u.searchParams;
+  p.set("q", $("#q").value.trim());
+  const ex = $("#ex").value.trim(); if (ex) p.set("ex", ex);
+  const rg = loadRegion(); if (rg?.value) { p.set("rg", rg.value); p.set("rl", rg.label || ""); }
+  p.set("km", radiusValue()); p.set("in", instantValue());
+  return u.toString();
+}
+async function shareResult(){
+  const url = shareUrl(), msg = $("#shareMsg");
+  const say = (t) => { if (msg) { msg.textContent = t; setTimeout(() => { if (msg.textContent === t) msg.textContent = ""; }, 4000); } };
+  if (navigator.share && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)) {
+    try { await navigator.share({ title: `${$("#q").value.trim()} 중고 시세`, url }); return; } catch (e) { if (e?.name === "AbortError") return; }
+  }
+  try { await navigator.clipboard.writeText(url); say("링크를 복사했습니다. 붙여넣어 보내세요."); }
+  catch { window.prompt("아래 링크를 복사해서 보내세요.", url); }
 }
 
 function ago(ms){
@@ -630,12 +661,21 @@ function ago(ms){
   const d = Math.floor(h / 24); return d < 30 ? `${d}일 전` : `${Math.floor(d / 30)}개월 전`;
 }
 
+const params = new URLSearchParams(location.search);
+// 공유 링크로 열었으면 링크에 담긴 설정을 이 브라우저 설정에 반영 (값이 올바른 것만)
+try {
+  const rg = params.get("rg");
+  if (rg && /^[0-9A-Za-z가-힣·.]{1,20}-\d{1,6}$/.test(rg)) localStorage.setItem("dgRegion", JSON.stringify({ value: rg, label: (params.get("rl") || "").slice(0, 60) }));
+  const km = params.get("km"); if (km && /^\d{1,2}$/.test(km)) localStorage.setItem("dgRadius", km);
+  const inst = params.get("in"); if (inst === "0" || inst === "1") localStorage.setItem("dgInstant", inst);
+} catch {}
+if (params.get("ex")) $("#ex").value = params.get("ex").slice(0, 100);
 drawRecent();
 drawRegion();
 $("#selRadius").value = radiusValue();
 $("#chkInstant").checked = instantValue() === "1";
-const params = new URLSearchParams(location.search);
-if (params.get("q")) { $("#q").value = params.get("q"); search(); }
+if (params.get("q")) { $("#q").value = params.get("q").slice(0, 60); search(); }
+
 </script>
 </body>
 </html>
