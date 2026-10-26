@@ -127,20 +127,44 @@
   .list .p{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
   .badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:4px;background:#FDE7E7;color:var(--warn);margin-right:4px}
   footer{margin-top:48px;font-size:13px;color:var(--muted)}
+  footer p{margin:0 0 6px}
+
+  /* 탭 (중고 시세 / 새 제품 최저가) */
+  .tabs{display:flex;gap:4px;margin:20px 0 0;border-bottom:1px solid var(--line)}
+  .tabs button{background:transparent;color:var(--muted);font-weight:700;font-size:15px;padding:10px 18px;border-radius:10px 10px 0 0;border-bottom:3px solid transparent;margin-bottom:-1px;cursor:pointer}
+  .tabs button:hover{color:var(--ink)}
+  .tabs button[aria-selected="true"]{color:var(--ink);background:var(--paper);border-bottom-color:var(--ink)}
+  .lowopt{margin-top:12px;font-size:14px;color:var(--muted)}
+  .lowopt input[type=checkbox]{width:auto;padding:0;border:0;vertical-align:-2px;margin:0 4px 0 0}
+  .shops{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:24px;font-size:13px;color:var(--muted)}
+  .shops span{margin-right:2px}
+  .shops a{padding:5px 12px;border:1px solid var(--line);border-radius:999px;background:var(--paper);color:var(--ink);text-decoration:none}
+  .shops a:hover{border-color:var(--ink)}
+  .tag .who{margin:8px 0 0;font-size:15px}
+  .tag .who a{color:var(--new);text-decoration:none}
+  .tag .who .lbl{display:inline-block;font-size:12px;padding:1px 7px;border-radius:4px;background:var(--bg);color:var(--muted);margin-right:6px}
   @media (max-width:520px){ .tag{padding:24px 18px 20px} .list a{grid-template-columns:48px 1fr;} .list .p{grid-column:2} .list img{width:48px;height:48px} }
   @media (prefers-reduced-motion:no-preference){ .tag{animation:in .25s ease-out} @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}} }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>중고 시세 조회</h1>
-  <p class="lead">제품명을 넣으면 최근 30일 실제 거래 가격(번개장터 거래완료 기준)과 번개장터·당근마켓·중고나라에서 지금 판매 중인 매물 가격, 다나와 새 제품 최저가, 갤럭시는 삼성 공식 보상판매 가격까지 함께 보여 줍니다.</p>
+  <h1>중고 시세 · 최저가 조회</h1>
+  <p class="lead" id="lead">제품명을 넣으면 최근 30일 실제 거래 가격(번개장터 거래완료 기준)과 번개장터·당근마켓·중고나라에서 지금 판매 중인 매물 가격, 다나와 새 제품 최저가, 갤럭시는 삼성 공식 보상판매 가격까지 함께 보여 줍니다.</p>
 
   <form id="f" autocomplete="off">
     <input id="q" type="search" placeholder="예: 아이패드 에어5, 닌텐도 스위치 OLED" required maxlength="60" aria-label="제품명">
     <button id="go" type="submit">조회</button>
     <input id="ex" type="text" placeholder="제외할 단어 (쉼표로 구분, 예: 프로, 케이스, 펜슬)" aria-label="제외할 단어">
   </form>
+  <div class="recent" id="recent"></div>
+
+  <div class="tabs" role="tablist" aria-label="조회 종류">
+    <button type="button" role="tab" id="tabUsed" data-tab="used" aria-controls="pUsed" aria-selected="true">중고 시세</button>
+    <button type="button" role="tab" id="tabLow" data-tab="low" aria-controls="pLow" aria-selected="false">새 제품 최저가</button>
+  </div>
+
+  <div id="pUsed" role="tabpanel" aria-labelledby="tabUsed">
   <div class="region">
     <span>당근 동네</span> <b id="regionLabel">인천광역시 연수구 송도동</b>
     <label>반경 <select id="selRadius" aria-label="당근 매물 반경">
@@ -157,13 +181,19 @@
     <button type="button" id="regionReset" class="linkbtn">기본(송도동)</button>
     <small id="regionMsg"></small>
   </div>
-  <div class="recent" id="recent"></div>
 
   <div id="out"></div>
+  </div>
+
+  <div id="pLow" role="tabpanel" aria-labelledby="tabLow" hidden>
+    <div class="lowopt"><label><input type="checkbox" id="lowEx" checked> 중고·해외구매·리퍼 가격은 최저가에서 제외</label></div>
+    <div id="lowOut"></div>
+  </div>
 
   <footer>
-    평균 거래 가격은 번개장터에서 최근 30일 안에 판매완료 처리된 글의 가격 기준입니다(판매완료 처리 시점을 거래일로 봄, 당근마켓은 거래완료 글을 공개하지 않아 제외). 광고, 구매 희망 글, 부품용 글, 케이스·필름 같은 액세서리 글과 지나치게 높거나 낮은 가격은 빼고 계산합니다. 당근마켓은 동네 기준 서비스라 설정한 동네 주변 매물만 반영됩니다.
-    새 제품가는 다나와 검색 1순위 상품의 최저가입니다. 단종으로 추정되는 제품(등록 후 1년 6개월 이상 지났고 최저가가 출시가보다 비싼 제품)은 출시가로 표시합니다. 실제 거래 가격은 상태·구성품·보증 여부에 따라 달라집니다.
+    <p id="footUsed">평균 거래 가격은 번개장터에서 최근 30일 안에 판매완료 처리된 글의 가격 기준입니다(판매완료 처리 시점을 거래일로 봄, 당근마켓은 거래완료 글을 공개하지 않아 제외). 광고, 구매 희망 글, 부품용 글, 케이스·필름 같은 액세서리 글과 지나치게 높거나 낮은 가격은 빼고 계산합니다. 당근마켓은 동네 기준 서비스라 설정한 동네 주변 매물만 반영됩니다.
+    새 제품가는 다나와 검색 1순위 상품의 최저가입니다. 단종으로 추정되는 제품(등록 후 1년 6개월 이상 지났고 최저가가 출시가보다 비싼 제품)은 출시가로 표시합니다. 실제 거래 가격은 상태·구성품·보증 여부에 따라 달라집니다.</p>
+    <p id="footLow" hidden>새 제품 최저가는 다나와 검색 화면에 나온 상품별·옵션별 가격 중 가장 낮은 가격입니다. 숫자가 들어간 모델명(예: 버즈4)은 반드시 일치하는 상품만 보여 주며, 광고 상품과 다른 제품을 묶은 구성은 뺍니다. 배송비·카드할인은 반영되지 않을 수 있으니 구매 전 판매처에서 확인해 주십시오. 네이버쇼핑은 검색 API가 2026년 7월 31일 종료되어 가격을 가져오지 못하고, 바로가기만 제공합니다.</p>
   </footer>
 </div>
 
@@ -186,19 +216,163 @@ function drawRecent(){
 function removeRecent(q){
   try {
     localStorage.setItem("recent", JSON.stringify(loadRecent().filter((x) => x !== q)));
-    const all = loadResults(); for (const k of Object.keys(all)) if (k.split("|")[0] === q) delete all[k];
-    localStorage.setItem("results", JSON.stringify(all));
+    for (const name of ["results", "lowResults"]) {
+      const all = JSON.parse(localStorage.getItem(name) || "{}");
+      for (const k of Object.keys(all)) if (k.split("|")[0] === q) delete all[k];
+      localStorage.setItem(name, JSON.stringify(all));
+    }
   } catch {}
   drawRecent();
 }
 $("#recent").addEventListener("click", (e) => {
   const t = e.target.closest("button"); if (!t) return;
-  if (t.dataset.clear) { try { localStorage.removeItem("recent"); localStorage.removeItem("results"); } catch {} drawRecent(); return; }
+  if (t.dataset.clear) { try { localStorage.removeItem("recent"); localStorage.removeItem("results"); localStorage.removeItem("lowResults"); } catch {} drawRecent(); return; }
   if (t.dataset.del) { removeRecent(t.dataset.del); return; }
-  if (t.dataset.q) { $("#q").value = t.dataset.q; search(); }
+  if (t.dataset.q) { $("#q").value = t.dataset.q; runTab(); }
 });
 
-$("#f").addEventListener("submit", (e) => { e.preventDefault(); search(); });
+$("#f").addEventListener("submit", (e) => { e.preventDefault(); runTab(); });
+
+// ---- 탭: 중고 시세 / 새 제품 최저가 ----
+// 검색창은 함께 쓰고, 보고 있는 탭의 조회만 실행 (탭을 바꾸면 그 탭 결과가 없을 때만 새로 조회)
+let tab = "used";
+const LEADS = {
+  used: "제품명을 넣으면 최근 30일 실제 거래 가격(번개장터 거래완료 기준)과 번개장터·당근마켓·중고나라에서 지금 판매 중인 매물 가격, 다나와 새 제품 최저가, 갤럭시는 삼성 공식 보상판매 가격까지 함께 보여 줍니다.",
+  low: "제품명을 넣으면 다나와에서 같은 모델의 새 제품을 찾아 상품별·옵션별 최저가를 낮은 순으로 보여 줍니다. 에누리·쿠팡 등 다른 쇼핑몰은 바로가기로 확인할 수 있습니다.",
+};
+function runTab(force = false){ return tab === "low" ? searchLow(force) : search(force); }
+function setTab(t, run = true){
+  tab = t === "low" ? "low" : "used";
+  try { localStorage.setItem("tab", tab); } catch {}
+  for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+  $("#pUsed").hidden = tab !== "used";
+  $("#pLow").hidden = tab !== "low";
+  $("#footUsed").hidden = tab !== "used";
+  $("#footLow").hidden = tab !== "low";
+  $("#lead").textContent = LEADS[tab];
+  if (!run) return;
+  const q = $("#q").value.trim();
+  if (!q) return;
+  if (tab === "low" && lowShown !== `${q}|${$("#ex").value.trim()}`) searchLow();
+  if (tab === "used" && (!current || current.q !== q)) search();
+}
+document.querySelector(".tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-tab]"); if (b && b.dataset.tab !== tab) setTab(b.dataset.tab);
+});
+// 왼쪽·오른쪽 화살표로도 탭 이동
+document.querySelector(".tabs").addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  setTab(tab === "used" ? "low" : "used");
+  $(tab === "used" ? "#tabUsed" : "#tabLow").focus();
+});
+
+// ---- 새 제품 최저가 (다나와) ----
+const LOW_FRESH_MS = 10 * 60 * 1000;
+let lowSeq = 0, lowShown = "", lowData = null, lowSavedAt = 0;
+function loadLow(){ try { return JSON.parse(localStorage.getItem("lowResults") || "{}"); } catch { return {}; } }
+function saveLow(key, data){
+  try {
+    const all = loadLow(); all[key] = { t: Date.now(), data };
+    for (const k of Object.keys(all).sort((x, y) => all[y].t - all[x].t).slice(20)) delete all[k];
+    localStorage.setItem("lowResults", JSON.stringify(all));
+  } catch {}
+}
+const shopLinks = (q) => {
+  const e = encodeURIComponent(q);
+  return [
+    ["다나와", `https://search.danawa.com/dsearch.php?query=${e}`],
+    ["에누리", `https://price.enuri.com/search?keyword=${e}`],
+    ["네이버쇼핑", `https://search.shopping.naver.com/search/all?query=${e}`],
+    ["쿠팡", `https://www.coupang.com/np/search?q=${e}`],
+    ["G마켓", `https://www.gmarket.co.kr/n/search?keyword=${e}`],
+    ["11번가", `https://search.11st.co.kr/Search.tmall?kwd=${e}`],
+  ];
+};
+
+async function searchLow(force = false){
+  const q = $("#q").value.trim(); if (!q) return;
+  const ex = $("#ex").value.trim();
+  const key = `${q}|${ex}`;
+  const seq = ++lowSeq;
+  saveRecent(q); drawRecent();
+  const saved = loadLow()[key];
+  if (!force && saved && Date.now() - saved.t < LOW_FRESH_MS) { lowShown = key; renderLow(saved.data, saved.t); return; }
+
+  $("#go").disabled = true;
+  $("#lowOut").innerHTML = `<div class="loading" role="status"><div class="bar"><span></span></div><p>다나와에서 새 제품 가격을 찾는 중입니다…</p></div>`;
+  let r = null, query = q;
+  // 서울에서 실패하면(다나와 403 등) 다른 지역 서버로 한 번씩 더 시도
+  for (const fr of ["ap-northeast-2", "ap-northeast-1", "us-west-1"]) {
+    try {
+      const res = await fetch(`${FUNCTION_URL}?q=${encodeURIComponent(q)}&ex=${encodeURIComponent(ex)}&only=lowprice&forceFunctionRegion=${fr}`, { cache: "no-store" });
+      let j = null;
+      try { j = await res.json(); } catch {}
+      if (!j) r = { error: `서버 응답 오류 (HTTP ${res.status})${res.status === 401 || res.status === 403 ? " - 함수의 Verify JWT를 꺼 주세요" : res.status === 404 ? " - 함수 'price'가 배포돼 있는지 확인" : ""}` };
+      else {
+        r = j.lowprice ?? (j.error ? { error: j.error } : { error: "최저가 결과가 없습니다 - 함수 'price'를 새 코드로 다시 배포했는지 확인해 주세요" });
+        if (j.query) query = j.query;
+      }
+    } catch { r = { error: "연결 실패 - Supabase 프로젝트 일시정지(Paused) 또는 ALLOWED_ORIGIN(CORS) 설정 확인" }; }
+    if (seq !== lowSeq) return;
+    if (!r?.error) break;
+  }
+  $("#go").disabled = false;
+  const data = { query, originalQuery: q, ...r };
+  if (!r.error && r.items?.length) saveLow(key, data);
+  lowShown = key;
+  renderLow(data);
+}
+
+function renderLow(d, savedAt = 0){
+  lowData = d; lowSavedAt = savedAt;
+  const exUsed = $("#lowEx").checked;
+  const links = `<div class="shops"><span>다른 곳에서 직접 보기</span>${shopLinks(d.query).map(([n, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${n} ↗</a>`).join("")}</div>`;
+  if (d.error) { $("#lowOut").innerHTML = `<p class="msg err">다나와 조회 실패: ${esc(d.error)}</p>` + links; return; }
+
+  // 상품마다 (중고 제외를 켰으면 정품 등 일반 옵션 중) 가장 낮은 가격을 고름
+  const all = (d.items || []).map((it) => {
+    const normal = it.options.filter((o) => !o.used);
+    const pool = exUsed && normal.length ? normal : it.options;
+    return { it, normal: normal.length, low: pool.reduce((a, b) => (b.price < a.price ? b : a)) };
+  });
+  let rows = exUsed ? all.filter((x) => x.normal) : all;
+  const onlyUsed = exUsed && !rows.length && all.length;
+  if (onlyUsed) rows = all; // 새 제품 옵션이 하나도 없으면 중고 등이라도 보여 줌
+  rows.sort((a, b) => a.low.price - b.low.price);
+
+  if (!rows.length) {
+    $("#lowOut").innerHTML = `<p class="msg">다나와에서 “${esc(d.query)}”와 모델명이 맞는 새 제품을 찾지 못했습니다. 정확한 모델명(예: 갤럭시 버즈4 프로)으로 검색해 보세요.</p>` + links;
+    return;
+  }
+  const top = rows[0];
+  let html = "";
+  if (savedAt) {
+    const m = Math.max(1, Math.round((Date.now() - savedAt) / 60000));
+    html += `<p class="saved">${m}분 전에 조회한 결과입니다. <button type="button" id="lowRefresh">새로 조회</button></p>`;
+  }
+  html += `<div class="share"><button type="button" id="lowShare">결과 링크 보내기</button><span class="done" id="lowShareMsg" role="status"></span></div>`;
+  if (d.originalQuery && d.originalQuery.trim() !== d.query) {
+    html += `<p class="saved">“${esc(d.originalQuery)}”을(를) “${esc(d.query)}”(으)로 바꿔 검색했습니다. (오타 교정·띄어쓰기)</p>`;
+  }
+  const rel = top.it.release;
+  html += `<section class="tag" aria-label="새 제품 최저가">
+    <p class="q">“${esc(d.query)}” 새 제품 최저가 (다나와)</p>
+    <div class="price">${won(top.low.price)}<small>원</small></div>
+    <p class="who">${top.low.label ? `<span class="lbl">${esc(top.low.label)}</span>` : ""}<a href="${esc(top.it.link)}" target="_blank" rel="noopener">${esc(top.it.title)} ↗</a></p>
+    ${rel ? `<p class="range">출시가 ${won(rel)}원${top.low.price < rel ? `보다 ${won(rel - top.low.price)}원 (${Math.round((1 - top.low.price / rel) * 100)}%) 낮음` : top.low.price > rel ? `보다 ${won(top.low.price - rel)}원 높음 (남은 재고 가격일 수 있음)` : "과 같음"}</p>` : ""}
+    ${onlyUsed ? `<p class="compare">새 제품(정품) 가격이 없어 중고·해외구매 등을 포함한 가격입니다.</p>` : ""}
+    <p class="note">조회된 ${rows.length}개 상품 중 가장 낮은 가격입니다. 같은 이름의 다른 구성(이어버드 단품, 케이스 포함 등)이 섞일 수 있으니 상품명을 확인해 주십시오. ${new Date(d.fetchedAt || Date.now()).toLocaleString("ko-KR")} 기준</p>
+  </section>`;
+  html += `<h2>상품별 최저가 <span class="sub">낮은 가격 순, 최대 15개</span></h2>` + listHtml(rows.slice(0, 15).map(({ it, low }) => ({
+    link: it.link, image: it.image, title: it.title, price: low.price,
+    mall: [low.label, it.options.length > 1 ? `가격 ${it.options.length}건 중 최저` : "", it.registered ? `${it.registered} 등록` : ""].filter(Boolean).join(" · ") || "다나와 최저가",
+  })));
+  html += links;
+  $("#lowOut").innerHTML = html;
+  $("#lowRefresh")?.addEventListener("click", () => searchLow(true));
+  $("#lowShare")?.addEventListener("click", shareResult);
+}
+$("#lowEx").addEventListener("change", () => { try { localStorage.setItem("lowEx", $("#lowEx").checked ? "1" : "0"); } catch {} if (lowData) renderLow(lowData, lowSavedAt); });
 
 // ---- 조회 결과 저장 (이 브라우저에만) ----
 // 당근은 같은 조회가 짧은 시간에 반복되면 빈 결과를 주므로, 10분 안의 같은 조회는 저장된 결과를 다시 보여 주고
@@ -642,10 +816,11 @@ function shareUrl(){
   const ex = $("#ex").value.trim(); if (ex) p.set("ex", ex);
   const rg = loadRegion(); if (rg?.value) { p.set("rg", rg.value); p.set("rl", rg.label || ""); }
   p.set("km", radiusValue()); p.set("in", instantValue());
+  if (tab === "low") p.set("tab", "low");
   return u.toString();
 }
 async function shareResult(){
-  const msg = $("#shareMsg");
+  const msg = $(tab === "low" ? "#lowShareMsg" : "#shareMsg");
   const say = (t) => { if (msg) { msg.textContent = t; setTimeout(() => { if (msg.textContent === t) msg.textContent = ""; }, 4000); } };
   const longUrl = shareUrl();
   let url = longUrl, short = false;
@@ -658,7 +833,7 @@ async function shareResult(){
   } catch {}
   if (msg) msg.textContent = "";
   if (navigator.share && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)) {
-    try { await navigator.share({ title: `${$("#q").value.trim()} 중고 시세`, url }); return; } catch (e) { if (e?.name === "AbortError") return; }
+    try { await navigator.share({ title: `${$("#q").value.trim()} ${tab === "low" ? "새 제품 최저가" : "중고 시세"}`, url }); return; } catch (e) { if (e?.name === "AbortError") return; }
   }
   try { await navigator.clipboard.writeText(url); say(short ? "짧은 주소를 복사했습니다. 붙여넣어 보내세요." : "링크를 복사했습니다. (짧은 주소를 만들지 못해 긴 주소로 복사)"); }
   catch { window.prompt("아래 링크를 복사해서 보내세요.", url); }
@@ -694,7 +869,13 @@ drawRecent();
 drawRegion();
 $("#selRadius").value = radiusValue();
 $("#chkInstant").checked = instantValue() === "1";
-if (params.get("q")) { $("#q").value = params.get("q").slice(0, 60); search(); }
+try { $("#lowEx").checked = localStorage.getItem("lowEx") !== "0"; } catch {}
+// 처음 보여 줄 탭: 공유 링크로 열었으면 링크의 탭(없으면 중고 시세), 아니면 이 브라우저에서 마지막으로 본 탭
+let firstTab = "used";
+if (params.get("q")) firstTab = params.get("tab") === "low" ? "low" : "used";
+else { try { firstTab = localStorage.getItem("tab") || "used"; } catch {} }
+setTab(firstTab, false);
+if (params.get("q")) { $("#q").value = params.get("q").slice(0, 60); runTab(); }
 })();
 </script>
 </body>

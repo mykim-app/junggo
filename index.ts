@@ -5,7 +5,9 @@
 // - 중고나라: 최근 등록된 판매 중 매물(최대 100건)을 같은 기준으로 집계
 // - 당근마켓: 지정한 동네(기본 인천 연수구 송도동) 주변 매물을 같은 기준으로 집계
 // - 다나와: 새 제품 최저가 참고 (네이버 쇼핑 검색 API는 2026-07-31 종료)
+// - 다나와 최저가 비교('새 제품 최저가' 탭): only=lowprice 로 상품별·옵션별 가격을 최저가 순으로
 // 호출: GET /functions/v1/price?q=아이패드 에어5&ex=키보드,펜슬
+//       GET /functions/v1/price?q=갤럭시 버즈4&only=lowprice
 
 // 호출 허용 주소 (도메인까지만, 여러 개는 쉼표로 구분). 기존 unipass 함수와 같은 Secret을 함께 씀
 const ALLOWED = (Deno.env.get("ALLOWED_ORIGIN") ?? "https://mykim-app.github.io")
@@ -674,7 +676,11 @@ async function fetchDanawa(q: string, exclude: string[]) {
   return data;
 }
 
-async function fetchDanawaOnce(q: string, exclude: string[]) {
+// 다나와 검색 화면 원본: '새 제품가'와 '최저가' 탭이 같은 화면을 쓰므로 10분간 저장해 다나와에 두 번 묻지 않음
+const danawaHtmlCache = new Map<string, { t: number; html: string }>();
+async function danawaHtml(q: string): Promise<string> {
+  const hit = danawaHtmlCache.get(q);
+  if (hit && Date.now() - hit.t < 10 * 60 * 1000) return hit.html;
   const url = `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
     headers: {
@@ -686,6 +692,13 @@ async function fetchDanawaOnce(q: string, exclude: string[]) {
   });
   if (!res.ok) throw new Error(`다나와 응답 오류 (${res.status})`);
   const html = await res.text();
+  danawaHtmlCache.set(q, { t: Date.now(), html });
+  if (danawaHtmlCache.size > 50) danawaHtmlCache.delete(danawaHtmlCache.keys().next().value!);
+  return html;
+}
+
+async function fetchDanawaOnce(q: string, exclude: string[]) {
+  const html = await danawaHtml(q);
 
   // 상품명 영역(prod_name)을 기준으로 나눠 이름·링크·첫 가격·이미지를 읽음
   const parts = html.split('class="prod_name"');
@@ -792,12 +805,101 @@ async function fetchDanawaOnce(q: string, exclude: string[]) {
   };
 }
 
+// ---------- 다나와 새 제품 최저가 비교 ('새 제품 최저가' 탭) ----------
+// 검색 결과의 상품마다 옵션별 가격(정품·해외구매·중고 등)을 모두 읽어 최저가 순으로 돌려줌
+// 중고·해외구매 제외 여부는 화면에서 바로 바꿀 수 있게 옵션마다 구분(used)만 표시
+const LOW_TAG = /정품|해외구매|해외리퍼비시|리퍼비시|리퍼|중고|벌크|렌탈|병행수입|직구|관부가세포함/g;
+const LOW_USED = /해외|리퍼|중고|벌크|렌탈|병행|직구/;
+const lowCache = new Map<string, { t: number; data: any }>();
+
+async function fetchLowprice(q: string, exclude: string[]) {
+  const ck = `${q}|${exclude.join(",")}`;
+  const hit = lowCache.get(ck);
+  if (hit && Date.now() - hit.t < 10 * 60 * 1000) return structuredClone(hit.data);
+  const html = await danawaHtml(q).catch(async (e) => {
+    if (!/403|timed out|시간/.test(String(e?.message ?? e))) throw e;
+    await new Promise((r) => setTimeout(r, 1500));
+    return danawaHtml(q);
+  });
+
+  // 상품명 영역(prod_name)을 기준으로 나눔 (새 제품가 조회와 같은 방식)
+  const parts = html.split('class="prod_name"');
+  type Opt = { price: number; label: string; used: boolean };
+  type Low = { title: string; link: string; image: string; options: Opt[]; release: number | null; registered: string | null };
+  const raw: Low[] = [];
+  const seen = new Set<string>();
+  for (let k = 1; k < parts.length; k++) {
+    const seg = parts[k];
+    const prev = parts[k - 1].slice(-6000);
+    const liClass = [...prev.matchAll(/<li[^>]*class="([^"]*)"/g)].pop()?.[1] ?? "";
+    if (/ad/i.test(liClass.replace("prod_item", ""))) continue; // 광고 상품 제외
+    const m = seg.match(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+    if (!m) continue;
+    const link = m[1].replace(/&amp;/g, "&");
+    if (seen.has(link)) continue;
+    const title = decode(m[2]);
+    const titleUsed = /중고|리퍼|해외구매/.test(title);
+
+    // 옵션별 가격: 가격 앞쪽 글자에서 가장 가까운 구분어(정품·해외구매 등)를 붙임
+    const options: Opt[] = [];
+    for (const pm of seg.matchAll(/class="price_sect">[\s\S]*?<strong>([\d,]+)<\/strong>/g)) {
+      const price = Number(pm[1].replace(/,/g, ""));
+      if (!price) continue;
+      const before = decode(seg.slice(Math.max(0, (pm.index ?? 0) - 600), pm.index));
+      const tags = before.match(LOW_TAG);
+      const label = tags ? tags[tags.length - 1] : "";
+      options.push({ price, label, used: titleUsed || LOW_USED.test(label) });
+    }
+    if (!options.length) continue;
+
+    const imgs = [...prev.matchAll(/<img[^>]+(?:data-original|src)="([^"]+)"/g)];
+    let image = imgs.pop()?.[1] ?? "";
+    if (image.startsWith("//")) image = "https:" + image;
+    const rel = seg.match(/출시가:\s*([\d,]+)원/);
+    const regM = decode(seg.slice(0, 40000)).match(/(\d{2})\.(\d{2})\.\s*등록/);
+    seen.add(link);
+    raw.push({
+      title, link, image, options,
+      release: rel ? Number(rel[1].replace(/,/g, "")) : null,
+      registered: regM ? `20${regM[1]}.${regM[2]}.` : null,
+    });
+  }
+
+  // 검색어와 맞는 상품만: 숫자가 든 모델명(버즈4, 아이폰16 등)은 반드시 일치, 다른 제품과 묶은 구성·액세서리·제외어는 뺌
+  const qTokens = tokens(q);
+  const acc = ACCESSORY.filter((w) => !qTokens.some((t) => t.includes(w) || w.includes(t)));
+  const required = modelTokens(q).filter((g) => g.some((f) => /\d/.test(f)));
+  const banned = exclude.map(norm).filter(Boolean);
+  const bundleOk = q.includes("+");
+  const items = raw.filter((x) =>
+    required.every((g) => groupHit(x.title, g, q)) &&
+    (bundleOk || !x.title.includes("+")) &&
+    !banned.some((b) => norm(x.title).includes(b)) &&
+    !acc.some((w) => norm(x.title).includes(w)));
+
+  const lowOf = (x: Low) => {
+    const normal = x.options.filter((o) => !o.used);
+    return Math.min(...(normal.length ? normal : x.options).map((o) => o.price));
+  };
+  items.sort((a, b) => lowOf(a) - lowOf(b));
+  const data = {
+    source: "다나와",
+    searched: raw.length,
+    items: items.slice(0, 20),
+    notFound: !items.length,
+    link: `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(q)}`,
+    fetchedAt: new Date().toISOString(),
+  };
+  if (raw.length) lowCache.set(ck, { t: Date.now(), data: structuredClone(data) });
+  return data;
+}
+
 // ---------- 짧은 주소 (공유 링크용) ----------
 // ?short=<q=...&ex=...> → 같은 내용이면 항상 같은 7자 코드를 돌려주고 저장, ?resolve=<코드> → 저장된 내용을 돌려줌
 // Supabase 표 short_links(code, params) 가 필요함 (README의 SQL 한 번 실행)
 const SB_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const SHORT_KEYS: Record<string, number> = { q: 60, ex: 100, rg: 40, rl: 60, km: 2, in: 1 };
+const SHORT_KEYS: Record<string, number> = { q: 60, ex: 100, rg: 40, rl: 60, km: 2, in: 1, tab: 4 };
 function cleanShortParams(raw: string): string | null {
   const src = new URLSearchParams(raw), out = new URLSearchParams();
   for (const [k, max] of Object.entries(SHORT_KEYS)) { const v = src.get(k); if (v) out.set(k, v.slice(0, max)); }
@@ -884,6 +986,7 @@ Deno.serve(async (req) => {
     joongna: () => fetchJoongna(q, exclude),
     sold: () => fetchBunjangSold(q, exclude, days),
     new: () => fetchDanawa(q, exclude),
+    lowprice: () => fetchLowprice(q, exclude),
     tradein: () => (/갤럭시|galaxy|삼성/i.test(q) ? fetchSamsungTradein(q) : Promise.resolve(null)),
   };
   if (single[only]) {
