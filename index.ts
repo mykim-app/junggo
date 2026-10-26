@@ -697,52 +697,96 @@ async function danawaHtml(q: string): Promise<string> {
   return html;
 }
 
+// ---- 다나와 검색 화면 읽기 ----
+// 2026-10 다나와 검색 화면 개편(Next.js)으로 기존 상품 칸(prod_name)이 없어짐.
+// 화면 안에 함께 실려 오는 상품 자료(self.__next_f.push 안의 "products":[...] JSON)를 꺼내 읽음
+function danawaProducts(html: string): { ok: boolean; products: any[] } {
+  let s = "";
+  for (const m of html.matchAll(/self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)/g)) {
+    try { s += JSON.parse(m[1]); } catch { /* 깨진 조각은 건너뜀 */ }
+  }
+  if (!s) return { ok: false, products: [] };
+  let best: any[] = [];
+  for (let i = s.indexOf('"products":['); i >= 0; i = s.indexOf('"products":[', i + 12)) {
+    try {
+      const arr = extractJsonArray(s, i + 11);
+      if (arr.length > best.length && arr[0]?.productName !== undefined) best = arr;
+    } catch { /* 다음 후보 */ }
+  }
+  return { ok: true, products: best };
+}
+
+// 통신사 약정 상품(기기변경·번호이동 완납 등)은 단말기 가격이 아니므로 제외 (예: 90원, 1,000원)
+const CARRIER = /기기변경|번호이동|신규가입|완납|선택약정|약정|할부|요금제/;
+// 중고·해외구매 등 '새 제품 정품'이 아닌 구분
+const LOW_USED = /해외|리퍼|중고|벌크|렌탈|병행|직구|공기계/;
+
+type DnwOpt = { price: number; label: string };
+type DnwItem = {
+  title: string; link: string; image: string; release: number | null;
+  regDate: Date | null; registered: string | null; minPrice: number; options: DnwOpt[];
+};
+function dnwItem(p: any): DnwItem {
+  const title = decode(String(p.productName ?? ""));
+  const link = String(p.linkUrl || `https://prod.danawa.com/info/?pcode=${p.productSeq}`).replace(/&amp;/g, "&");
+  let image = String(p.imageUrl ?? "");
+  if (image.startsWith("//")) image = "https:" + image;
+  const release = p.priceTypeName === "출시가" && Number(p.initialPrice) > 0 ? Number(p.initialPrice) : null;
+  // 등록월: "26.02" 또는 "20260225 16:18:24" 형태
+  const d = String(p.inputDate ?? "");
+  const r = d.match(/^(\d{4})(\d{2})/) ?? d.match(/^(\d{2})\.(\d{2})/);
+  const year = r ? (r[1].length === 2 ? 2000 : 0) + Number(r[1]) : 0;
+  // 옵션(정품·해외구매 또는 색상·용량)별 최저가. 옵션 목록이 없으면 상품 최저가 하나
+  const list = Array.isArray(p.bundleList) && p.bundleList.length ? p.bundleList : [p];
+  const options = list
+    .map((b: any) => ({ price: Number(b.minPrice) || 0, label: decode(String(b.bundleName ?? "")) }))
+    .filter((o: DnwOpt) => o.price > 0);
+  return {
+    title, link, image, release,
+    regDate: r ? new Date(year, Number(r[2]) - 1, 1) : null,
+    registered: r ? `${year}.${r[2]}.` : null,
+    minPrice: Number(p.minPrice) || 0,
+    options,
+  };
+}
+
 async function fetchDanawaOnce(q: string, exclude: string[]) {
   const html = await danawaHtml(q);
+  const { ok, products } = danawaProducts(html);
+  if (!ok) throw new Error("다나와 화면에서 상품 자료를 찾지 못했습니다 (화면 구조 변경 가능성)");
 
-  // 상품명 영역(prod_name)을 기준으로 나눠 이름·링크·첫 가격·이미지를 읽음
-  const parts = html.split('class="prod_name"');
   type Item = {
     title: string; price: number; link: string; image: string; mall: string;
     lowest: number; release: number | null; discontinued: boolean; registered: string | null;
   };
   const raw: Item[] = [];
-  for (let k = 1; k < parts.length; k++) {
-    const seg = parts[k];
-    const prev = parts[k - 1].slice(-6000);
-    const liClass = [...prev.matchAll(/<li[^>]*class="([^"]*)"/g)].pop()?.[1] ?? "";
-    if (/ad/i.test(liClass.replace("prod_item", ""))) continue; // 광고 상품 제외
-    const m = seg.match(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
-    const p = seg.match(/class="price_sect">[\s\S]*?<strong>([\d,]+)<\/strong>/);
-    if (!m || !p) continue;
-    const imgs = [...prev.matchAll(/<img[^>]+(?:data-original|src)="([^"]+)"/g)];
-    let image = imgs.pop()?.[1] ?? "";
-    if (image.startsWith("//")) image = "https:" + image;
-    const lowest = Number(p[1].replace(/,/g, ""));
-    const rel = seg.match(/출시가:\s*([\d,]+)원/);
-    const release = rel ? Number(rel[1].replace(/,/g, "")) : null;
-    // 다나와 등록월 (예: "22.04. 등록")
-    const regM = decode(seg.slice(0, 40000)).match(/(\d{2})\.(\d{2})\.\s*등록/);
-    const regDate = regM ? new Date(2000 + Number(regM[1]), Number(regM[2]) - 1, 1) : null;
-    const ageMonths = regDate ? (Date.now() - regDate.getTime()) / (30.4 * 86400000) : 0;
+  for (const p of products) {
+    const x = dnwItem(p);
+    if (CARRIER.test(x.title)) continue; // 통신사 약정 상품 제외
+    // 정품 등 일반 옵션 중 최저가 (해외구매·중고 옵션은 제외, 일반 옵션이 없으면 상품 최저가)
+    const normal = x.options.filter((o) => !LOW_USED.test(o.label));
+    const lowest = normal.length ? Math.min(...normal.map((o) => o.price)) : x.minPrice;
+    if (!lowest) continue;
+    const release = x.release;
+    const ageMonths = x.regDate ? (Date.now() - x.regDate.getTime()) / (30.4 * 86400000) : 0;
     // 다나와는 단종 여부를 따로 표시하지 않음 → 등록 후 18개월 이상 지났고 최저가가 출시가보다 비싸면
     // 남은 재고 가격으로 보고 단종으로 추정 (신제품의 일시적 웃돈은 제외)
     const discontinued = !!release && lowest > release && ageMonths >= 18;
     raw.push({
-      title: decode(m[2]),
+      title: x.title,
       price: discontinued ? release! : lowest, // 단종 추정 제품은 출시가로 표시
-      link: m[1].replace(/&amp;/g, "&"),
-      image,
+      link: x.link,
+      image: x.image,
       mall: discontinued ? `출시가, 단종 추정 (현재 최저가 ${lowest.toLocaleString("ko-KR")}원)` : "다나와 최저가",
       lowest,
       release,
       discontinued,
-      registered: regM ? `20${regM[1]}.${regM[2]}.` : null,
+      registered: x.registered,
     });
   }
 
-  // 중고·해외구매·리퍼 제외, 제외어 반영
-  const banned = ["중고", "해외구매", "리퍼", "렌탈", ...exclude].map(norm).filter(Boolean);
+  // 중고·해외구매·리퍼·공기계 제외, 제외어 반영
+  const banned = ["중고", "해외구매", "리퍼", "렌탈", "공기계", ...exclude].map(norm).filter(Boolean);
   // 다나와는 검색어와 다른 신제품을 앞에 보여 주는 경우가 있어(예: 워치2 → 워치8) 검색어가 모두 들어 있는 상품만 사용
   // 애플 제품처럼 상품명이 영문인 경우를 위해 흔한 한글 표기는 영문으로도 맞춰 봄
   const qTokens = tokens(q);
@@ -808,8 +852,6 @@ async function fetchDanawaOnce(q: string, exclude: string[]) {
 // ---------- 다나와 새 제품 최저가 비교 ('새 제품 최저가' 탭) ----------
 // 검색 결과의 상품마다 옵션별 가격(정품·해외구매·중고 등)을 모두 읽어 최저가 순으로 돌려줌
 // 중고·해외구매 제외 여부는 화면에서 바로 바꿀 수 있게 옵션마다 구분(used)만 표시
-const LOW_TAG = /정품|해외구매|해외리퍼비시|리퍼비시|리퍼|중고|벌크|렌탈|병행수입|직구|관부가세포함/g;
-const LOW_USED = /해외|리퍼|중고|벌크|렌탈|병행|직구/;
 const lowCache = new Map<string, { t: number; data: any }>();
 
 async function fetchLowprice(q: string, exclude: string[]) {
@@ -822,47 +864,25 @@ async function fetchLowprice(q: string, exclude: string[]) {
     return danawaHtml(q);
   });
 
-  // 상품명 영역(prod_name)을 기준으로 나눔 (새 제품가 조회와 같은 방식)
-  const parts = html.split('class="prod_name"');
+  // 화면 속 상품 자료를 읽음 (새 제품가 조회와 같은 방식). 통신사 약정 상품은 제외
+  const { ok, products } = danawaProducts(html);
+  if (!ok) throw new Error("다나와 화면에서 상품 자료를 찾지 못했습니다 (화면 구조 변경 가능성)");
   type Opt = { price: number; label: string; used: boolean };
   type Low = { title: string; link: string; image: string; options: Opt[]; release: number | null; registered: string | null };
   const raw: Low[] = [];
   const seen = new Set<string>();
-  for (let k = 1; k < parts.length; k++) {
-    const seg = parts[k];
-    const prev = parts[k - 1].slice(-6000);
-    const liClass = [...prev.matchAll(/<li[^>]*class="([^"]*)"/g)].pop()?.[1] ?? "";
-    if (/ad/i.test(liClass.replace("prod_item", ""))) continue; // 광고 상품 제외
-    const m = seg.match(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
-    if (!m) continue;
-    const link = m[1].replace(/&amp;/g, "&");
-    if (seen.has(link)) continue;
-    const title = decode(m[2]);
-    const titleUsed = /중고|리퍼|해외구매/.test(title);
-
-    // 옵션별 가격: 가격 앞쪽 글자에서 가장 가까운 구분어(정품·해외구매 등)를 붙임
-    const options: Opt[] = [];
-    for (const pm of seg.matchAll(/class="price_sect">[\s\S]*?<strong>([\d,]+)<\/strong>/g)) {
-      const price = Number(pm[1].replace(/,/g, ""));
-      if (!price) continue;
-      const before = decode(seg.slice(Math.max(0, (pm.index ?? 0) - 600), pm.index));
-      const tags = before.match(LOW_TAG);
-      const label = tags ? tags[tags.length - 1] : "";
-      options.push({ price, label, used: titleUsed || LOW_USED.test(label) });
-    }
-    if (!options.length) continue;
-
-    const imgs = [...prev.matchAll(/<img[^>]+(?:data-original|src)="([^"]+)"/g)];
-    let image = imgs.pop()?.[1] ?? "";
-    if (image.startsWith("//")) image = "https:" + image;
-    const rel = seg.match(/출시가:\s*([\d,]+)원/);
-    const regM = decode(seg.slice(0, 40000)).match(/(\d{2})\.(\d{2})\.\s*등록/);
-    seen.add(link);
-    raw.push({
-      title, link, image, options,
-      release: rel ? Number(rel[1].replace(/,/g, "")) : null,
-      registered: regM ? `20${regM[1]}.${regM[2]}.` : null,
-    });
+  for (const p of products) {
+    const x = dnwItem(p);
+    if (seen.has(x.link) || CARRIER.test(x.title) || !x.options.length) continue;
+    // 상품명 자체가 중고·해외구매·공기계 등이면 모든 옵션을 그 구분으로 표시
+    const titleTag = x.title.match(/중고|리퍼|해외구매|공기계|병행수입/)?.[0] ?? "";
+    const options: Opt[] = x.options.map((o) => ({
+      price: o.price,
+      label: titleTag && !o.label.includes(titleTag) ? (o.label ? `${titleTag} · ${o.label}` : titleTag) : o.label,
+      used: !!titleTag || LOW_USED.test(o.label),
+    }));
+    seen.add(x.link);
+    raw.push({ title: x.title, link: x.link, image: x.image, options, release: x.release, registered: x.registered });
   }
 
   // 검색어와 맞는 상품만: 숫자가 든 모델명(버즈4, 아이폰16 등)은 반드시 일치, 다른 제품과 묶은 구성·액세서리·제외어는 뺌
